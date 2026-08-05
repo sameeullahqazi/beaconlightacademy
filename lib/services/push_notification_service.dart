@@ -5,7 +5,6 @@ import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/screens/correspondence_details.dart';
 import 'package:bla_flutter_app/screens/diary_details.dart';
-import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app_badger/flutter_app_badger.dart';
@@ -122,14 +121,6 @@ class PushNotificationService {
     if (data.isEmpty) return;
 
     String? type = data['type'];
-
-    // ✅ Log that a notification was opened by the user
-    try {
-      FirebaseAnalytics.instance.logEvent(
-        name: 'notification_opened',
-        parameters: {'type': type ?? 'unknown'},
-      );
-    } catch (_) {}
 
     if (type == 'diary_new') {
       try {
