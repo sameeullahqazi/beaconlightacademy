@@ -1,0 +1,518 @@
+import 'dart:ffi';
+import 'dart:ui';
+import 'package:color_connexion/entities/color_entity.dart';
+import 'package:color_connexion/utils/styles.dart';
+import 'package:flutter/material.dart';
+
+import 'package:color_connexion/utils/helpers.dart';
+import 'package:color_connexion/screens/ColorDetail.dart';
+import 'package:color_connexion/components/GradientAlert.dart';
+import 'package:color_connexion/utils/breakpoints.dart';
+import 'package:color_connexion/controllers/color_controller.dart';
+import 'package:provider/provider.dart';
+import 'package:flutter_gen/gen_l10n/app_localizations.dart';
+import 'package:color_connexion/controllers/login_controller.dart';
+
+import '../models/color_model.dart';
+
+class ColorsDataSource extends DataTableSource {
+  final BuildContext context;
+  List<ColorEntity> listOfColors;
+  void Function(ColorEntity) onPress;
+  late ColorLibraryController clc;
+  int totalRows;
+  static const int rowsPerPage = 20;
+  Function addSelectedIds;
+  Function onToggleFavorite;
+  Function onColorChecked;
+  final Function? onToggleFavoriteCallback;
+  Map<String, String> checkedExportIds = {};
+  bool limitedColumns;
+  List? listOfDeltaE;
+  int offset = 0;
+  bool chkAll = false;
+
+  var selectedIds = <bool>[];
+  // Map<int, bool> objSelectedIds = Map<int, bool>();
+  late LoginController loginController;
+  late Locale locale;
+  var loggedInUserId =
+      0; // ToDo: This needs to contain the logged in user id using the helper function getLoggedInUser()
+  var bIsEmployee = false;
+  void sortString<T>(
+      Comparable<T> Function(ColorEntity color) getField, bool ascending) {
+    listOfColors.sort((a, b) {
+      final aValue = getField(a).toString().toLowerCase();
+      final bValue = getField(b).toString().toLowerCase();
+
+      if (ascending) {
+        return Comparable.compare(aValue, bValue);
+      } else {
+        return Comparable.compare(bValue, aValue);
+      }
+    });
+    notifyListeners();
+  }
+
+  void sortDouble(double Function(ColorEntity color) getField, bool ascending) {
+    listOfColors.sort((a, b) {
+      final double aValue = getField(a);
+      final double bValue = getField(b);
+
+      if (ascending) {
+        return aValue.compareTo(bValue);
+      } else {
+        return bValue.compareTo(aValue);
+      }
+    });
+    notifyListeners();
+  }
+
+  void sortInt(int Function(ColorEntity color) getField, bool ascending) {
+    listOfColors.sort((a, b) {
+      final int aValue = getField(a);
+      final int bValue = getField(b);
+
+      if (ascending) {
+        return aValue.compareTo(bValue);
+      } else {
+        return bValue.compareTo(aValue);
+      }
+    });
+    notifyListeners();
+  }
+
+  void sortDate(DateTime Function(ColorEntity color) getField, bool ascending) {
+    listOfColors.sort((a, b) {
+      final DateTime aValue = getField(a);
+      final DateTime bValue = getField(b);
+
+      if (ascending) {
+        return aValue.compareTo(bValue);
+      } else {
+        return bValue.compareTo(aValue);
+      }
+    });
+    notifyListeners();
+  }
+
+  static dynamic _dummyAddSelectedIds(String val) {}
+
+  factory ColorsDataSource.fromColorsData(
+    BuildContext context,
+    List<ColorEntity> listOfColors,
+    void Function(ColorEntity) onPress,
+    int totalRows,
+    ColorLibraryController clc,
+    Map<String, String> checkedExportIds, {
+    Function addSelectedIds = _dummyAddSelectedIds,
+    bool bIsEmployee = false,
+    bool limitedColumns = false,
+    List? listOfDeltaE,
+  }) {
+    return ColorsDataSource(
+      context,
+      listOfColors,
+      onPress,
+      totalRows,
+      clc,
+      addSelectedIds,
+      () => {},
+      () => {},
+      checkedExportIds,
+      () => {},
+      bIsEmployee,
+      limitedColumns: limitedColumns,
+      listOfDeltaE: listOfDeltaE,
+    );
+  }
+
+  ColorsDataSource(
+      this.context,
+      this.listOfColors,
+      this.onPress,
+      this.totalRows,
+      this.clc,
+      this.addSelectedIds,
+      this.onToggleFavorite,
+      this.onColorChecked,
+      this.checkedExportIds,
+      this.onToggleFavoriteCallback,
+      this.bIsEmployee,
+      {this.limitedColumns = false,
+      this.listOfDeltaE});
+
+  List<Map<String, dynamic>> get colors => List.generate(
+        listOfColors.length,
+        (index) => {
+          // ToDo
+          'chk_color_id': listOfColors[index].colorId,
+          'favorite': listOfColors[index].bFavorite == 1,
+          'color': listOfColors[index].rgbR == null
+              ? 0xFFFFFF
+              : convertRGBToHex(listOfColors[index].rgbR,
+                  listOfColors[index].rgbG, listOfColors[index].rgbB),
+          'formula_name': listOfColors[index].formulaName,
+          'formula_number': listOfColors[index].formulaNumber,
+          'anilox': listOfColors[index].aniloxes,
+          'substrate': listOfColors[index].substrateType,
+          'last_sample':
+              listOfColors[index].lastSampledDate, // ?? DateTime(2022, 5, 5),
+          // This is used to check if we are sorting by deltaE values
+          'delta_e': limitedColumns
+              ? (listOfDeltaE != null
+                  ? listOfDeltaE![
+                      (index + offset) % (listOfDeltaE!.length ?? 0)]['deltaE']
+                  : "")
+              : listOfColors[index].deltaE,
+          'device': listOfColors[index]
+              .deviceName, // listOfColors[index].targetDevice,
+          /*'modification_log': [
+            {
+              'date': DateTime(2022, 5, 5),
+              'content': 'User changed read mode from QC to Production',
+            },
+            {
+              'date': DateTime(2019, 02, 15),
+              'content': 'User changed read mode from Production to QC',
+            },
+            {
+              'date': DateTime(2018, 10, 12),
+              'content': 'User created color',
+            }
+          ],*/
+          'vendor': listOfColors[index].vendorName,
+          'creation_date': listOfColors[index].createdDate,
+          'status': listOfColors[index].statusName,
+          'export': false,
+          'id': listOfColors[index].colorId,
+          'bLocal': listOfColors[index].bLocal,
+          'customer': listOfColors[index].customerName,
+        },
+      );
+
+  DataCell cellFor(Object? cellData, [columnName, ColorEntity? ce, index]) {
+    MediaQuery.of(context).size;
+    dynamic cellContent;
+
+    if(columnName == 'chk_color_id') {
+      String colorIdKey =
+        '${listOfColors[index % rowsPerPage].colorId}-${listOfColors[index % rowsPerPage].isFormula ? 'F' : 'C'}';
+
+      cellContent = Checkbox(
+        activeColor: Theme.of(context).colorScheme.primary,
+        value: checkedExportIds.containsKey(colorIdKey),
+        onChanged: (value) {
+          if (value!) {
+            checkedExportIds[colorIdKey] = '';
+          } else {
+            // print("removing item at index: $index");
+            checkedExportIds.remove(colorIdKey);
+          }
+          // print("checkedExportIds upon checking: ${checkedExportIds.toString()}");
+          onColorChecked(checkedExportIds);
+          notifyListeners();
+        },
+      );
+    } else
+    if (columnName == 'modification_log') {
+      cellContent = IconButton(
+        onPressed: () {
+          List<Map<String, Object>> modLogData =
+              cellData as List<Map<String, Object>>;
+
+          showModLogDialog(modLogData);
+
+          // print('Mod log button pressed');
+        },
+        icon: Icon(Icons.note_alt),
+      );
+    } else if (cellData is int) {
+      if (columnName == 'color') {
+        cellContent = SizedBox(
+          width: 32,
+          height: 32,
+          child: Container(
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: ColoredBox(
+              color: Color(cellData),
+            ),
+          ),
+        );
+      } else {
+        cellContent = Text(
+          cellData.toString(),
+          style: bodyText(context),
+        );
+      }
+    } else if (cellData is bool) {
+      if (columnName == 'favorite') {
+        if (limitedColumns) {
+          cellContent = Text('');
+        } else {
+          cellContent = IconButton(
+            onPressed: () {
+              // print('Favorite button pressed');
+
+              // ToDos:
+              //  1.  Determine whether it's a color/formula
+              //  2.  If color,
+              //    - call toggleColorFavorite
+              //    - save userId in colors table for customerColorId
+              //    - add backend api call /toggleColorFavorite to post_api_queue
+              //  3.  else
+              //    - call toggleFormulaFavorite
+              //    - save userId in formulas table for customerFormulaId
+              //    - add backend api call /toggleFormulaFavorite to post_api_queue
+
+              var colorInfo = listOfColors[index];
+              var isFormula = colorInfo.isFormula;
+              var id = colorInfo.customerColorId;
+              // print("index: $index, colorInfo.bFavorite: ${colorInfo.bFavorite}");
+              // print("isFormula: $isFormula, id: $id");
+
+              // print("listOfColors: ${listOfColors.toList().toString()}");
+
+              onToggleFavorite(id, cellData, isFormula);
+            },
+            color: cellData ? Colors.red : Colors.grey,
+            icon: Icon(cellData ? Icons.favorite : Icons.favorite_border),
+          );
+        }
+      }
+    } else if (cellData is String) {
+      if (columnName == 'formula_name') {
+        cellContent = TextButton(
+          onPressed: () {
+            // print('check');
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ColorDetail(
+                  colorData: ce!,
+                  listOfColorReadEntity: [],
+                  listOfColorChanges: '',
+                  jobColorId: 0,
+                  bLocalJobColor: false,
+                  onToggleFavoriteCallback: onToggleFavoriteCallback,
+                ),
+              ),
+            );
+          },
+          child: Tooltip(
+            message: ce!.bLocal == 1 ? 'Updated locally, not yet synced!' : '',
+            child: Text(
+              cellData,
+              style: hyperlinkText(context, bLocal: ce.bLocal),
+            ),
+          ),
+        );
+      } else {
+        cellContent = Text(
+          cellData,
+          style: bodyText(context),
+        );
+      }
+    } else if (cellData is int) {
+      cellContent = Text(
+        cellData.toString(),
+        style: bodyText(context),
+      );
+    } else if (cellData is DateTime) {
+      cellContent = Text(
+        '${cellData.year}-${cellData.month.toString().padLeft(2, '0')}-${cellData.day.toString().padLeft(2, '0')}',
+        style: bodyText(context),
+      );
+    } else if (cellData is double) {
+      cellContent = Text(
+        cellData.toStringAsFixed(2),
+        style: bodyText(context),
+      );
+    } else {
+      cellContent = Text("");
+    }
+    // cellContent = Text(cellData);
+    return DataCell(cellContent,
+        onTap: () => {
+              // print("datacell clicked - ce: $ce"),
+              if (ce != null) {onPress(ce!)}
+            });
+  }
+
+  @override
+  DataRow? getRow(int index) {
+    // print(index);
+    if (colors.elementAtOrNull(index % rowsPerPage) == null) {
+      return null;
+    }
+    String colorIdKey =
+        '${listOfColors[index % rowsPerPage].colorId}-${listOfColors[index % rowsPerPage].isFormula ? 'F' : 'C'}';
+    return DataRow.byIndex(
+      onSelectChanged: (value) {
+
+        if (value!) {
+          // checkedExportIds[index] = colorId;
+          checkedExportIds[colorIdKey] = '';
+        } else {
+          // print("removing item at index: $index");
+          checkedExportIds.remove(colorIdKey);
+        }
+
+        // print("onSelectChanged - colorIdKey upon checking: $colorIdKey, value: $value, checkedExportIds after: ${checkedExportIds.toString()}");
+        // onColorChecked(colorId, value);
+        onColorChecked(checkedExportIds);
+        notifyListeners();
+      },
+      index: index,
+      selected: checkedExportIds.containsKey(colorIdKey), // index),
+      cells: <DataCell>[
+        cellFor(
+            colors[index % rowsPerPage]['chk_color_id'], 'chk_color_id', null, index),
+        cellFor(
+            colors[index % rowsPerPage]['favorite'], 'favorite', null, index),
+        cellFor(colors[index % rowsPerPage]['color'], 'color',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['formula_name'], 'formula_name',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['formula_number'], 'formula_number',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['anilox'], 'anilox',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['substrate'], 'substrate',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['last_sample'], 'last_sample',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['delta_e'], 'delta_e',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['device'], 'device',
+            listOfColors[index % rowsPerPage]),
+        /*cellFor(colors[index % rowsPerPage]['modification_log'],
+            'modification_log'),*/
+        // Samee - ToDo - determine customer/employee mode - In case of any issues/doubts hardcode this to false
+        cellFor(colors[index % rowsPerPage]['customer'], 'customer',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['vendor'], 'vendor',
+            listOfColors[index % rowsPerPage]),
+        cellFor(colors[index % rowsPerPage]['creation_date'], 'creation_date',
+            listOfColors[index % rowsPerPage]),
+        /* cellFor(colors[index % rowsPerPage]['status']),*/
+      ],
+    );
+  }
+
+  @override
+  bool get isRowCountApproximate => false;
+
+  @override
+  int get rowCount => totalRows;
+
+  @override
+  int get selectedRowCount => 0;
+
+  void onSelectAll(bool bSelectAll) {
+    checkedExportIds = {};
+    chkAll = bSelectAll;
+    if (bSelectAll) {
+      var numColors = listOfColors.length;
+      // print("ColorDataSource:onSelectAll() called - bSelectAll: $bSelectAll, num of listOfColors: $numColors");
+      for (var i = 0; i < numColors; i++) {
+        ColorEntity? ce = listOfColors[i % rowsPerPage];
+        if(ce != null) {  
+          String colorIdKey =
+          '${ce.colorId}-${ce.isFormula ? 'F' : 'C'}';
+          // checkedExportIds[i.toString()] = '${listOfColors[i].colorId}';
+          checkedExportIds[colorIdKey] = '';
+        }
+      }
+    }
+    // print("checkedExportIds: ${checkedExportIds.toString()}");
+    
+    onColorChecked(checkedExportIds);
+    notifyListeners();
+  }
+
+  void showModLogDialog(List<Map<String, Object>> modLogData) {
+    final cc2Colors = Theme.of(context).colorScheme;
+
+    loginController = Provider.of<LoginController>(context, listen: false);
+    locale = Locale(loginController.language);
+
+    showDialog(
+      context: context, // You'll need to pass the context here
+      builder: (BuildContext context) {
+        return GradientAlert(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Localizations.override(
+                  context: context,
+                  locale: locale,
+                  child: Builder(builder: (context) {
+                    return Text(
+                      AppLocalizations.of(context)!.modificationLog,
+                      style: cc2Heading3(context),
+                    );
+                  })),
+              SizedBox(
+                height: 12,
+              ),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < modLogData.length; i++) ...[
+                    Text(
+                      '${DateTime.parse(modLogData[i]['date'].toString()).year}-${DateTime.parse(modLogData[i]['date'].toString()).month}-${DateTime.parse(modLogData[i]['date'].toString()).day}',
+                      style: bodyText(context),
+                    ),
+                    SizedBox(
+                      height: 4,
+                    ),
+                    Text(
+                      modLogData[i]['content'].toString(),
+                      style: bodyText(context),
+                    ),
+                    SizedBox(
+                      height: 24,
+                    ),
+                  ],
+                ],
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: cc2Colors.errorContainer,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 16,
+                        ),
+                        textStyle: buttonText(context,
+                            color: cc2Colors.onErrorContainer)),
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Localizations.override(
+                        context: context,
+                        locale: locale,
+                        child: Builder(builder: (context) {
+                          return Text(
+                            AppLocalizations.of(context)!.closeButton,
+                            style: TextStyle(
+                              color: cc2Colors.onErrorContainer,
+                            ),
+                          );
+                        })),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
