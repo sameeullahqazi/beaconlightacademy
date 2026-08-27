@@ -250,7 +250,15 @@ class LoginController with ChangeNotifier {
 
       if (storedPwd == null) {
         _showErrorDialog("Credential Error",
-            "Credentials not found. Please clear data and try again.");
+            "Credentials not found. Deleting local data...... \nPlease try again.");
+        // 2. Close DB
+        var res = await _sqLiteDB?.close();
+        // print("Closing DB result: $res, deleting DB file for $username");
+
+        // 3. Delete DB File
+        if (username.isNotEmpty) {
+          await SQLiteDB.deleteDatabase(username);
+        }
       } else if (checkPassword) {
         await createDB(username, topUsername != null);
         var dbSuccess = await _sqLiteDB!.open(shouldCreateSchema: false);
@@ -411,14 +419,28 @@ class LoginController with ChangeNotifier {
   }
 
   void logoutOrExit() async {
-    // ✅ 1. Burn the Firebase Token so notifications stop arriving for the old user!
     try {
+      // ✅ 1. Get the current token before deleting it
+      String? token = await FirebaseMessaging.instance.getToken();
+      // print("logoutOrExit(): Current FCM token: $token");
+
+      if (token != null) {
+        // ✅ 2. Tell YOUR backend to delete this token from `user_fcm_tokens`
+        // Note: Implement this API call in your AuthService or DataRepository
+        await _dataRepository!.removeDeviceTokenFromServer(
+          fcmToken: token,
+          userId: _user!.id,
+          authService: _authService,
+        );
+      }
+
+      // ✅ 3. Burn the Firebase Token locally (This auto-drops topic subscriptions on Google's end!)
       await FirebaseMessaging.instance.deleteToken();
     } catch (e) {
       print("Error deleting FCM token: $e");
     }
 
-    // 2. Proceed with normal logout cleanup
+    // 4. Proceed with normal logout cleanup
     _user = null;
     await _sqLiteDB?.close();
     syncStateStreamSubs?.cancel();

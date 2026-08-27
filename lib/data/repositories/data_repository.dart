@@ -222,8 +222,7 @@ class DataRepository {
 
       //Check if it is fetching for the first time and should fetch in batches
       if (paramsList.isEmpty && shouldFetchInBatches) {
-        int _startId = startId;
-        int _endId = _startId + batchSize;
+        int _startId = startId; // This is our SQL offset (starts at 0)
         int numberOfRowsFetched = 0;
 
         do {
@@ -231,6 +230,7 @@ class DataRepository {
 
           downloadingStatusStreamController
               ?.add("Downloading ${tableName.replaceAll("_", " ")}");
+
           //Fetch data from server
           entityResult = await apiDataSourceInterface.fetchData(
             cookies: cookies,
@@ -239,31 +239,33 @@ class DataRepository {
             accessToken: accessToken,
           );
 
+          // ✅ FIX 1: Isolate the current batch
+          var currentBatch = entityResult["dataList"] as List<BaseModel>;
+          numberOfRowsFetched = currentBatch.length;
+
           //Exit loop if no data is returned
-          if (entityResult["dataList"].isEmpty) {
+          if (numberOfRowsFetched == 0) {
             break;
           }
 
-          // entityList = entityResult["dataList"] as List<BaseModel>;
-          entityList = List.from(entityList)
-            ..addAll(entityResult["dataList"] as List<BaseModel>);
-
-          // print("Data Repository: ${fetchAction.name} Syncing ${entityList.toString()}, num of records  fetched in this batch: ${(entityResult["dataList"] as List<BaseModel>).length}");
+          // Safely accumulate into the main list so timestamps still calculate correctly later
+          entityList = List.from(entityList)..addAll(currentBatch);
 
           downloadingStatusStreamController
               ?.add("Saving ${tableName.replaceAll("_", " ")} to database");
-          //Storing data locally in tables
-          await _sqLiteDB.executeTransaction(
-              tableName, entityList.map((c) => c.toSQLLiteMap()).toList());
 
-          _startId = _endId + 1;
-          _endId += batchSize;
-          numberOfRowsFetched = entityList.length;
+          // ✅ FIX 2: Only insert the CURRENT batch into SQLite to prevent freezing!
+          await _sqLiteDB.executeTransaction(
+              tableName, currentBatch.map((c) => c.toSQLLiteMap()).toList());
+
+          // ✅ FIX 3: Standard SQL offset increments exactly by batchSize (0 -> 1000 -> 2000)
+          _startId += batchSize;
+
           totalRowsFetched += numberOfRowsFetched;
           paramsList.clear();
-        } while (numberOfRowsFetched != 0 &&
-            (batchSize == 0 ||
-                batchSize > 0 && numberOfRowsFetched == batchSize));
+
+          // print("Data Repository: ${fetchAction.name} - Total rows fetched so far: $totalRowsFetched, number of rows fetched in this batch: $numberOfRowsFetched, batchSize: $batchSize, next offset: $_startId");
+        } while (numberOfRowsFetched == batchSize);
       } else {
         if (shouldDownloadJson) {
           paramsList.add("downloadJSON=1");
@@ -454,7 +456,7 @@ class DataRepository {
     if (studentId != null) {
       filters.add("studentId = '$studentId'");
     }
-    print("getUnreadCorrespondenceCount() - filters: $filters");
+    // print("getUnreadCorrespondenceCount() - filters: $filters");
     // Note: Correspondence table uses 'studentName' usually, but ideally should use 'studentId'
     // If your schema maps studentId, use that.
     // Based on your schema, correspondences has 'studentName'.
@@ -541,6 +543,8 @@ class DataRepository {
       offset: offset,
     );
 
+    // print("getDiaries() - whereClause: $whereClause, whereArgs: $whereArgs, orderBy: $orderBy, limit: $limit, offset: $offset, maps length: ${maps.length}");
+
     return List.generate(maps.length, (i) {
       return DiaryModel.fromSQLLiteMap(maps[i]);
     });
@@ -569,7 +573,7 @@ class DataRepository {
     // Assuming 'date' or 'modifiedDate' column.
     // Check your model: you use 'date' (display string) and 'modifiedDate' (ISO).
     // Best to sort by modifiedDate or id desc.
-    String orderBy = "id DESC";
+    String orderBy = "modifiedDate DESC"; // "id DESC";
     // print("getCorrespondences() whereClaseuse: $whereClause, whereArgs: $whereArgs, orderBy: $orderBy, limit: $limit, offset: $offset");
     final db = await _sqLiteDB.database;
     final List<Map<String, dynamic>> maps = await db.query(
@@ -671,9 +675,16 @@ class DataRepository {
   }
 
   // Fetch Contacts (Teachers/Admins) for Correspondence
-  Future<List<Map<String, String>>> getContacts() async {
-    var contacts =
-        await _sqLiteDB.rawQuery("select * from ${TableNames.contacts}");
+  Future<List<Map<String, String>>> getContacts(
+      {String? selectedStudentId}) async {
+    String sqlContacts =
+        "SELECT * FROM ${TableNames.contacts} WHERE is_deleted = 0";
+
+    if (selectedStudentId != null && selectedStudentId.isNotEmpty) {
+      sqlContacts += " AND (studentId = '$selectedStudentId')";
+    }
+    // print("getContacts() - selectedStudentId: $selectedStudentId, SQL: $sqlContacts");
+    var contacts = await _sqLiteDB.rawQuery(sqlContacts);
     return contacts
         .map((e) => {
               'id': e['id'].toString(),
@@ -1406,6 +1417,7 @@ class DataRepository {
     required AuthService authService,
   }) async {
     try {
+      // print("Updating device token for userId: $userId, deviceId: $deviceId, fcmToken: $fcmToken");
       await postDataToServer(
         authService.cookieValue,
         "updateDeviceToken",
@@ -1420,6 +1432,29 @@ class DataRepository {
       );
     } catch (e) {
       print("❌ Error updating device token: $e");
+    }
+  }
+
+  // ---------------------------------
+  // --- UPDATE DEVICE FCM TOKEN ---
+  // ---------------------------------
+  Future<void> removeDeviceTokenFromServer({
+    required String fcmToken,
+    required String userId,
+    required AuthService authService,
+  }) async {
+    try {
+      await postDataToServer(
+        authService.cookieValue,
+        "removeDeviceToken",
+        jsonEncode({
+          "deviceToken": fcmToken,
+          "userId": userId,
+        }),
+        accessToken: authService.accessToken,
+      );
+    } catch (e) {
+      print("❌ Error removing device token: $e");
     }
   }
 

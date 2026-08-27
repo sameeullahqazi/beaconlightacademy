@@ -1,6 +1,7 @@
 import 'package:bla_flutter_app/components/app_header.dart';
 import 'package:bla_flutter_app/components/app_footer.dart';
 import 'package:bla_flutter_app/constants/table_names_strings.dart';
+import 'package:bla_flutter_app/controllers/dashboard_controller.dart';
 import 'package:bla_flutter_app/controllers/login_controller.dart';
 import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/screens/correspondence_details.dart';
@@ -26,6 +27,8 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
   List<Map<String, String>> _classes = [];
   List<Map<String, String>> _students = []; // Parent's own kids
 
+  String? _currentStudentId;
+
   String? _selectedClassId;
   String? _selectedContactId; // The Parent ID / Teacher ID
   String? _selectedStudentId; // The Student ID
@@ -37,6 +40,8 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
   @override
   void initState() {
     super.initState();
+    final dashCtrl = Provider.of<DashboardController>(context, listen: false);
+    _currentStudentId = dashCtrl.selectedStudentId;
     _loadData();
   }
 
@@ -53,13 +58,20 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
         _classes = await repo.getClasses();
       } else {
         // --- PARENT FLOW ---
-        _filteredContacts = _allContacts;
         final userStudents = loginCtrl.getUser?.studentList ?? [];
         _students = userStudents
             .map((s) => {'id': s.id, 'name': s.studentName})
             .toList();
 
-        if (_students.isNotEmpty) _selectedStudentId = _students.first['id'];
+        // 1. Map the global header selection to the local form state
+        if (_currentStudentId != null && _currentStudentId != 'all') {
+          _selectedStudentId = _currentStudentId;
+        } else if (_students.isNotEmpty) {
+          _selectedStudentId = _students.first['id'];
+        }
+
+        // 2. Apply the filter so the Teacher dropdown populates correctly
+        _filterParentContacts();
       }
     }
 
@@ -71,6 +83,18 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
         _allContacts.where((c) => c['classId'] == _selectedClassId).toList();
     _selectedContactId = null;
     _selectedStudentId = null;
+  }
+
+  void _filterParentContacts() {
+    if (_selectedStudentId == null) return;
+
+    // Filter contacts where the studentId matches the local dropdown selection
+    _filteredContacts = _allContacts
+        .where((c) => c['studentId'] == _selectedStudentId)
+        .toList();
+
+    // Reset the teacher selection so they must actively pick a valid one
+    _selectedContactId = null;
   }
 
   @override
@@ -154,6 +178,27 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
 
                     // --- PARENT FLOW ---
                     else ...[
+                      const Text("Select Student",
+                          style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      const SizedBox(height: 4),
+                      DropdownMenu<String>(
+                        expandedInsets: EdgeInsets.zero,
+                        enableFilter: false, // Small list, no search needed
+                        hintText: "Select your student...",
+                        inputDecorationTheme: _dropdownDecorTheme(),
+                        initialSelection: _selectedStudentId,
+                        dropdownMenuEntries: _students
+                            .map((s) => DropdownMenuEntry(
+                                value: s['id']!, label: s['name']!))
+                            .toList(),
+                        onSelected: (val) {
+                          setState(() {
+                            _selectedStudentId = val;
+                            _filterParentContacts(); // Updates the teacher list!
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 16),
                       const Text("Select Contact (Teacher)",
                           style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
@@ -169,23 +214,6 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
                             .toList(),
                         onSelected: (val) =>
                             setState(() => _selectedContactId = val),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text("Select Student",
-                          style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      const SizedBox(height: 4),
-                      DropdownMenu<String>(
-                        expandedInsets: EdgeInsets.zero,
-                        enableFilter: false, // Small list, no search needed
-                        hintText: "Select your student...",
-                        inputDecorationTheme: _dropdownDecorTheme(),
-                        initialSelection: _selectedStudentId,
-                        dropdownMenuEntries: _students
-                            .map((s) => DropdownMenuEntry(
-                                value: s['id']!, label: s['name']!))
-                            .toList(),
-                        onSelected: (val) =>
-                            setState(() => _selectedStudentId = val),
                       ),
                       const SizedBox(height: 16),
                     ],
