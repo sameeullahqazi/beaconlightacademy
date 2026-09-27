@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "488060032510",
+    "project_id": "bla-app-live",
+    "storage_bucket": "bla-app-live.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:488060032510:android:1ee7951698767bec2d5caf",
+        "android_client_info": {
+          "package_name": "com.beaconlightacademy.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAMablaM1NzBHmPDDMZBRqgtNS5K3Oir7M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

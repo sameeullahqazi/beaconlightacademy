@@ -336,8 +336,7 @@ class DataRepository {
         // date = getLatestDateTime(entityList);
         // ✅ FIX: Use the string helper instead of getLatestDateTime()
         String latestDateStr = getLatestModifiedDateString(entityList);
-        print(
-            "latest date for $tableName: $date, latestDateStr: $latestDateStr");
+        // print("latest date for $tableName: $date, latestDateStr: $latestDateStr");
 
         var lastID = dataFetchModel != null
             ? dataFetchModel.lastID
@@ -373,8 +372,7 @@ class DataRepository {
     // print("latestDateTime: $latestDateTime, latestDateTime in utc: ${latestDateTime.toUtc()}");
     for (var dateTime in dateTimeList) {
       var tmpMap = dateTime.toMap();
-      print(
-          "tmpMap: ${tmpMap['modifiedDate']}, dateTime.modDate: ${dateTime.modDate}, in utc: ${dateTime.modDate.toUtc()}");
+      // print(     "tmpMap: ${tmpMap['modifiedDate']}, dateTime.modDate: ${dateTime.modDate}, in utc: ${dateTime.modDate.toUtc()}");
       if (dateTime.modDate.compareTo(latestDateTime) > 0) {
         latestDateTime = dateTime.modDate.toUtc();
       }
@@ -1338,7 +1336,7 @@ class DataRepository {
       jsonEncode({"appCorrespondenceId": correspondenceId, "message": message}),
       accessToken: authService.accessToken,
     );
-    print("response from sendCorrespondenceReply(): ${res.toString()}");
+    // print("response from sendCorrespondenceReply(): ${res.toString()}");
 
     // 2. ✅ Save locally AFTER success
     if (res.isNotEmpty && res['success'] == true) {

@@ -36,7 +36,7 @@ class ApiCorrespondenceMessagesDataSource implements APIDataSourceInterface {
         'Cookie': cookies,
       },
     );
-    // print("customer color fetchData() - response code :${response.statusCode}, body: ${response.body}");
+    // print("correspondence messages fetchData() - response code :${response.statusCode}, body: ${response.body}");
     if (response.statusCode == 200) {
       var dataList = jsonDecode(response.body)['data'] as List<dynamic>;
       List<CorrespondenceMessageModel> list =

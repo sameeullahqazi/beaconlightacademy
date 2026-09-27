@@ -96,10 +96,16 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           if (Get.context != null) {
             final loginCtrl =
                 Provider.of<LoginController>(Get.context!, listen: false);
-            // print("Pending background sync: Checking LoginController for user and data repository...loginCtrl.getUser: ${loginCtrl.getUser}, loginCtrl.getDataRepository(): ${loginCtrl.getDataRepository()}");
             if (loginCtrl.getUser != null &&
                 loginCtrl.getDataRepository() != null) {
-              loginCtrl.runDataSync();
+              // ✅ PROCESS THE OFFLINE PAYLOADS FIRST!
+              await PushNotificationService.instance
+                  .processPendingBackgroundPayloads();
+
+              // ✅ DEFER THE HEAVY SYNC so the UI can render instantly without locking
+              Future.delayed(const Duration(seconds: 3), () {
+                // loginCtrl.runDataSync();
+              });
             }
           }
         } catch (e) {
@@ -140,6 +146,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             if (loginCtrl.getUser != null &&
                 loginCtrl.getDataRepository() != null) {
               // print("Cold Start Sync Triggered after $retries seconds!");
+
+              // ✅ PROCESS THE OFFLINE PAYLOADS FIRST!
+              await PushNotificationService.instance
+                  .processPendingBackgroundPayloads();
               loginCtrl.runDataSync();
               syncTriggered = true; // Break the loop!
             }

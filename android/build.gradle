@@ -1,0 +1,52 @@
+buildscript {
+    // 1. Give the Flutter CLI EXACTLY the string it is searching for
+    ext.kotlin_version = '1.9.24'
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+// 2. 🚀 THE FIX: Override plugins BEFORE the project locks!
+subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileSdkVersion 34
+            }
+        }
+    }
+    
+    // Force the modern core-ktx library to permanently cure the 'lStar' error
+    project.configurations.all {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'org.jetbrains.kotlin') {
+                details.useVersion "1.9.24"
+            }
+            if (details.requested.group == 'androidx.core' && details.requested.name == 'core-ktx') {
+                details.useVersion "1.12.0"
+            }
+        }
+    }
+}
+
+// 3. Gradle Evaluation Lock (Must remain at the very bottom)
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

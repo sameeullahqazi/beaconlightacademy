@@ -12,19 +12,21 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:bla_flutter_app/utils/helpers.dart';
+import 'dart:convert';
 
 // 1. Top-level background handler (MUST be outside any class)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  print(
-      "Handling a background message: ${message.messageId}, type: ${message.data['type']}, data: ${message.data}");
-  // Note: You cannot safely update UI here. This is purely for background data processing if needed.
-  // ✅ Wipes the red badge off the app icon!
+  print("Handling a background message: ${message.messageId}");
   FlutterAppBadger.removeBadge();
 
-  // ✅ 2. Tell the app it needs to sync the next time it wakes up!
   final prefs = await SharedPreferences.getInstance();
   await prefs.setBool('pending_background_sync', true);
+
+  // ✅ NEW: Queue the payload as a JSON string so the main app can process it when it wakes up!
+  List<String> pendingPayloads = prefs.getStringList('pending_payloads') ?? [];
+  pendingPayloads.add(jsonEncode(message.data));
+  await prefs.setStringList('pending_payloads', pendingPayloads);
 }
 
 class PushNotificationService {
@@ -40,7 +42,8 @@ class PushNotificationService {
 
     // 1. FOREGROUND LISTENER
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      // print('🔥 Got a message whilst in the foreground! ${message.messageId}, type: ${message.data['type']}, data: ${message.data}');
+      print(
+          '🔥 Got a message whilst in the foreground! ${message.messageId}, type: ${message.data['type']}, data: ${message.data}');
 
       // ✅ Intercept and save the payload instantly
       if (message.data['type'] == 'diary_new') {
@@ -52,8 +55,10 @@ class PushNotificationService {
       }
 
       if (message.notification != null) {
-        // Manually show a Snackbar since Firebase doesn't show system banners in foreground
-        Get.snackbar(message.notification?.title ?? "New Notification",
+        // ✅ Only attempt to draw the snackbar if the UI is fully booted
+        if (Get.overlayContext != null) {
+          Get.snackbar(
+            message.notification?.title ?? "New Notification",
             message.notification?.body ?? "",
             snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.white,
@@ -61,21 +66,25 @@ class PushNotificationService {
             icon: const Icon(Icons.notifications_active,
                 color: Color(0xFF4CAF50)),
             duration: const Duration(seconds: 5),
-            boxShadows: [BoxShadow(color: Colors.black12, blurRadius: 8)],
+            boxShadows: const [BoxShadow(color: Colors.black12, blurRadius: 8)],
             onTap: (snack) {
-          _handleNotificationTap(message.data);
-        });
+              _handleNotificationTap(message.data);
+            },
+          );
+        }
       }
     });
 
     // 2. BACKGROUND TAP LISTENER (App is minimized)
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      // print('🔥 Notification tapped from Background! ${message.messageId}, type: ${message.data['type']}, data: ${message.data}');
+      print(
+          '🔥 Notification tapped from Background! ${message.messageId}, type: ${message.data['type']}, data: ${message.data}');
       _handleNotificationTap(message.data);
     });
 
     // 3. TERMINATED TAP LISTENER (App is fully closed)
     RemoteMessage? initialMessage = await _fcm.getInitialMessage();
+    print("🔥 Initial message on cold start: $initialMessage");
     if (initialMessage != null) {
       print('🔥 App opened from Terminated state via notification tap!');
 
@@ -366,7 +375,7 @@ class PushNotificationService {
           Provider.of<LoginController>(Get.context!, listen: false);
       final repo = loginCtrl.getDataRepository();
 
-      // print("saveCorrespondenceLocally called with data: ${data.toString()}");
+      print("saveCorrespondenceLocally called with data: ${data.toString()}");
       // print("Current Repo Instance: $repo");
 
       if (repo != null) {
@@ -380,6 +389,7 @@ class PushNotificationService {
             "SELECT id FROM ${TableNames.correspondences} WHERE id = $corrId");
 
         // print("Existing thread check for correspondenceId $corrId: $existingThread");
+        String serverTimestamp = data['createdDate'].toString();
 
         if (existingThread.isEmpty) {
           // Brand new thread! Insert it so the UI can see it.
@@ -395,6 +405,12 @@ class PushNotificationService {
             'modifiedDate': data['createdDate'],
             'is_deleted': 0,
           });
+
+          // 3. Advance Sync Timestamp
+          await repo.rawUpdate(
+            "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
+            [serverTimestamp, corrId.toString(), 'correspondences'],
+          );
         } else {
           // Thread exists! Just update the preview snippet and mark unread
           // ✅ Convert dates to PST before saving!
@@ -437,12 +453,9 @@ class PushNotificationService {
 
         // 3. Advance Sync Timestamp
         await repo.rawUpdate(
-            "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
-            [
-              data['createdDate'].toString(),
-              msgId.toString(),
-              'correspondencesMessages'
-            ]);
+          "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
+          [serverTimestamp, msgId.toString(), 'correspondencesMessages'],
+        );
 
         // ✅ 4. Force UI refresh WITH A DELAY so SQLite can finish writing!
         Future.delayed(const Duration(milliseconds: 500), () {
@@ -493,6 +506,14 @@ class PushNotificationService {
             'createdDate': DateTime.now().toString(),
           });
 
+          await repo.rawUpdate(
+              "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
+              [
+                data['createdDate'].toString(),
+                msgId.toString(),
+                'diariesComments'
+              ]);
+
           // 3. Force UI refresh (If they are currently looking at the DiaryDetails screen, it will pop in!)
           Future.delayed(const Duration(milliseconds: 500), () {
             try {
@@ -527,6 +548,37 @@ class PushNotificationService {
     } catch (e) {
       print("Error getting FCM token: $e");
       return null;
+    }
+  }
+
+  // ✅ NEW: Process the background queue when the app wakes up
+  Future<void> processPendingBackgroundPayloads() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    List<String> pendingPayloads =
+        prefs.getStringList('pending_payloads') ?? [];
+
+    if (pendingPayloads.isNotEmpty) {
+      print(
+          "🔥 Processing ${pendingPayloads.length} payloads from the background queue...");
+      for (String payloadStr in pendingPayloads) {
+        try {
+          Map<String, dynamic> data = jsonDecode(payloadStr);
+          String? type = data['type'];
+
+          if (type == 'diary_new') {
+            await _saveDiaryLocally(data);
+          } else if (type == 'correspondence_new') {
+            await _saveCorrespondenceLocally(data);
+          } else if (type == 'diary_comment_new') {
+            await _saveDiaryCommentLocally(data);
+          }
+        } catch (e) {
+          print("Error processing pending payload: $e");
+        }
+      }
+      // Wipe the queue once successfully saved to SQLite
+      await prefs.setStringList('pending_payloads', []);
     }
   }
 
