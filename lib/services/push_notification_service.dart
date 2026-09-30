@@ -412,6 +412,14 @@ class PushNotificationService {
 
         if (existingThread.isEmpty) {
           // Brand new thread! Insert it so the UI can see it.
+          // Convert to local time before storing, same as the existing-thread
+          // branch below - otherwise a brand-new thread's modifiedDate stays
+          // in UTC (~5 hours behind Pakistan time), sorting it below older
+          // threads whose modifiedDate was already converted. Mutate `data`
+          // itself (not just inline) so the message insert further below,
+          // shared by both branches, also picks up the converted values.
+          data['date'] = utcToLocal(data['date']);
+          data['createdDate'] = utcToLocal(data['createdDate']);
           await repo.saveDataToLocal(TableNames.correspondences, {
             'id': corrId, // <-- Int
             'subject': data['correspondenceTitle'],
