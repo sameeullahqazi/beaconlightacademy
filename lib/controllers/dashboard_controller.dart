@@ -3,6 +3,8 @@ import 'package:bla_flutter_app/controllers/login_controller.dart';
 import 'package:bla_flutter_app/data/repositories/data_repository.dart';
 import 'package:bla_flutter_app/services/data_sync_service.dart'; // Import this
 import 'package:flutter/material.dart';
+import 'package:flutter_app_badger/flutter_app_badger.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class DashboardController with ChangeNotifier {
   final LoginController _loginController;
@@ -66,8 +68,30 @@ class DashboardController with ChangeNotifier {
       _unreadDiaries = diariesCount;
       _unreadCorrespondences = correspondencesCount;
       notifyListeners();
+
+      // The OS icon badge always reflects the TOTAL across every student /
+      // the whole account, not whichever child happens to be selected in
+      // the dashboard right now - mirrors how WhatsApp's badge counts
+      // everything, not just the open chat.
+      final overallDiaries = await repo.getUnreadDiaryCount();
+      final overallCorrespondences = await repo.getUnreadCorrespondenceCount();
+      await _syncAppIconBadge(overallDiaries + overallCorrespondences);
     } catch (e) {
       print("Error refreshing counts: $e");
+    }
+  }
+
+  Future<void> _syncAppIconBadge(int total) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('app_icon_badge_count', total);
+      if (total > 0) {
+        await FlutterAppBadger.updateBadgeCount(total);
+      } else {
+        await FlutterAppBadger.removeBadge();
+      }
+    } catch (_) {
+      // Badge plugin failures shouldn't break count refreshing.
     }
   }
 }

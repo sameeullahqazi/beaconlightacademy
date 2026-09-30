@@ -271,32 +271,36 @@ class LoginController with ChangeNotifier {
 
           initControllers();
 
-          // Fix: Use bang operator (!)
-          var strUserData = await _dataRepository!.getUsers(userName: username);
-          if (strUserData.isNotEmpty) {
-            _user = UserModel.fromSQLiteMap(strUserData.toList().first);
+          // Prefer a fresh profile from the server (picks up class
+          // transfers, fee-defaulter status, etc.) so the topic healer
+          // below has current data; fall back to the local cache offline.
+          bool haveFreshUser = await _serverLogin(username, storedPwd);
+          if (haveFreshUser && _user != null) {
+            await _dataRepository!
+                .saveDataToLocal(TableNames.users, _user!.toSQLLiteMap());
             await SecureStorageService.instance.write(
                 key: StorageStringsConstants.userDataKey,
                 value: jsonEncode(_user!.toMap()));
 
-            await _syncFCMToken(); // ✅ ADD THIS HERE
-            // print("Returning Login Success: Navigating to Dashboard");
+            await _syncFCMToken();
+            // print("Returning Login Success (fresh): Navigating to Dashboard");
             Get.offNamed('/dashboard');
           } else {
-            // print("Local user missing. Attempting server login fallback...");
-            bool serverSuccess = await _serverLogin(username, storedPwd);
+            // print("Server unreachable. Falling back to local cache...");
+            var strUserData = await _dataRepository!.getUsers(userName: username);
+            if (strUserData.isNotEmpty) {
+              _user = UserModel.fromSQLiteMap(strUserData.toList().first);
+              await SecureStorageService.instance.write(
+                  key: StorageStringsConstants.userDataKey,
+                  value: jsonEncode(_user!.toMap()));
 
-            if (serverSuccess) {
-              if (_user != null) {
-                // Fix: Use bang operator (!)
-                await _dataRepository!
-                    .saveDataToLocal(TableNames.users, _user!.toSQLLiteMap());
-              }
-              await _syncFCMToken(); // ✅ ADD THIS HERE
-              // print("Fallback Login Success: Navigating to Dashboard");
+              await _syncFCMToken();
+              // print("Returning Login Success (cached): Navigating to Dashboard");
               Get.offNamed('/dashboard');
             } else {
-              print("Fallback login failed");
+              print("Returning login failed: no fresh or cached user data.");
+              _showErrorDialog("Login Error",
+                  "Unable to load your profile. Please check your connection and try again.");
             }
           }
         } else {
@@ -668,7 +672,21 @@ class LoginController with ChangeNotifier {
 
       setSyncingStateListener();
 */
-      // 7. Restore Authentication State
+      // 7. Try to refresh the profile from the server (picks up class
+      // transfers, fee-defaulter status, etc. before the topic healer
+      // runs); silently keep the cached copy already loaded above if
+      // the device is offline or the server is unreachable.
+      UserModel? freshUser = await _authService.login(username, storedPwd);
+      if (freshUser != null) {
+        _user = freshUser;
+        await _dataRepository!
+            .saveDataToLocal(TableNames.users, freshUser.toSQLLiteMap());
+        await SecureStorageService.instance.write(
+            key: StorageStringsConstants.userDataKey,
+            value: jsonEncode(freshUser.toMap()));
+      }
+
+      // 8. Restore Authentication State
       // Important: Ensure AuthService has the token/cookie so API calls work
       _authService.setCredentials(
         userId: _user!.id,
@@ -676,7 +694,7 @@ class LoginController with ChangeNotifier {
         cookie: "", // Cookies might be stale, but Token is what matters now
       );
 
-      await _syncFCMToken(); // ✅ ADD THIS HERE
+      await _syncFCMToken();
       // print("✅ Auto-Login Successful for ${username}");
       return true;
     } catch (e, stackTrace) {

@@ -444,7 +444,7 @@ class DataRepository {
     return await getTotalRowCountForTable(TableNames.diaries, filters);
   }
 
-  // 2. Get Unread Correspondence Count (Optional: Filter by Student)
+  // 2. Get Unread Correspondence Count (sum of unread messages, not thread count)
   Future<int> getUnreadCorrespondenceCount({String? studentId}) async {
     List<String> filters = ["bRead = 0", "is_deleted = 0"];
 
@@ -454,16 +454,20 @@ class DataRepository {
     if (studentId != null) {
       filters.add("studentId = '$studentId'");
     }
-    // print("getUnreadCorrespondenceCount() - filters: $filters");
-    // Note: Correspondence table uses 'studentName' usually, but ideally should use 'studentId'
-    // If your schema maps studentId, use that.
-    // Based on your schema, correspondences has 'studentName'.
-    // If you don't have studentId in correspondences, we might need to filter by name or just show all for now.
-    // Let's assume for now we filter only if you add a studentId column later,
-    // or we filter by matching the student name string if that's how your data works.
 
-    // For now, let's keep it simple (All Unread) until we verify the column.
-    return await getTotalRowCountForTable(TableNames.correspondences, filters);
+    // Sum numUnreadMessages rather than counting threads: a thread's bRead
+    // flag only moves once per read/unread cycle, so a count of unread
+    // threads stops changing after the first new message in an
+    // already-unread thread, even though more messages keep arriving.
+    var query =
+        'SELECT SUM(numUnreadMessages) as total FROM ${TableNames.correspondences}';
+    if (filters.isNotEmpty) {
+      query += ' WHERE ${filters.join(" AND ")}';
+    }
+    final result = await _sqLiteDB.rawQuery(query);
+    return result.isNotEmpty
+        ? ((result.first['total'] as num?)?.toInt() ?? 0)
+        : 0;
   }
 
   // Fetch Diaries with Filters & Pagination

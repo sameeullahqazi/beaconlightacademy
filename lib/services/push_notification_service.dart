@@ -18,15 +18,34 @@ import 'dart:convert';
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   print("Handling a background message: ${message.messageId}");
-  FlutterAppBadger.removeBadge();
 
   final prefs = await SharedPreferences.getInstance();
   await prefs.setBool('pending_background_sync', true);
+
+  // This background handler runs in its own isolate/engine, whose
+  // SharedPreferences cache can be stale relative to the main isolate's
+  // (e.g. right after the main isolate clears pending_payloads once it
+  // finishes processing them). Without reloading first, this could append
+  // onto an already-processed list and cause the same message to be
+  // handled - and its unread counter incremented - more than once.
+  await prefs.reload();
 
   // ✅ NEW: Queue the payload as a JSON string so the main app can process it when it wakes up!
   List<String> pendingPayloads = prefs.getStringList('pending_payloads') ?? [];
   pendingPayloads.add(jsonEncode(message.data));
   await prefs.setStringList('pending_payloads', pendingPayloads);
+
+  // Optimistic +1 on the OS icon badge: this isolate has no live DB/Provider
+  // access to compute the true unread total, so we bump a persisted counter
+  // instead. DashboardController.refreshCounts() resyncs this to the real
+  // count the next time the app is opened, synced, or gets a foreground push.
+  try {
+    final next = (prefs.getInt('app_icon_badge_count') ?? 0) + 1;
+    await prefs.setInt('app_icon_badge_count', next);
+    await FlutterAppBadger.updateBadgeCount(next);
+  } catch (e) {
+    print("Error bumping app icon badge in background: $e");
+  }
 }
 
 class PushNotificationService {
@@ -404,6 +423,7 @@ class PushNotificationService {
             'bRead': 0,
             'modifiedDate': data['createdDate'],
             'is_deleted': 0,
+            'numUnreadMessages': 1,
           });
 
           // 3. Advance Sync Timestamp

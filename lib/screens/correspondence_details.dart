@@ -26,16 +26,10 @@ class _CorrespondenceDetailsScreenState
   bool _isLoading = true;
   UserModel? _currentUser;
 
-  int _lastTotalUnread = -1; // ✅ 1. Add our trusted tracker
-
   @override
   void initState() {
     super.initState();
     _currentUser = Provider.of<LoginController>(context, listen: false).getUser;
-
-    // ✅ 2. Trap the initial count
-    _lastTotalUnread =
-        Provider.of<DashboardController>(context, listen: false).totalUnread;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadMessages();
@@ -51,8 +45,8 @@ class _CorrespondenceDetailsScreenState
   }
 
   Future<void> _loadMessages() async {
-    final repo = Provider.of<LoginController>(context, listen: false)
-        .getDataRepository();
+    final loginCtrl = Provider.of<LoginController>(context, listen: false);
+    final repo = loginCtrl.getDataRepository();
     if (repo != null) {
       final msgs = await repo.getCorrespondenceMessages(widget.item.id);
       if (mounted) {
@@ -61,6 +55,17 @@ class _CorrespondenceDetailsScreenState
           _isLoading = false;
         });
       }
+
+      // A message arriving while this exact conversation is open still gets
+      // marked unread by the push handler, which has no way of knowing the
+      // user is already looking right at it. Re-mark it read on every load
+      // (including live updates) so it doesn't pile up an unread count
+      // behind the user's back while this screen is open.
+      await repo.markCorrespondenceAsRead(
+        widget.item.id,
+        authService: loginCtrl.authService,
+        userId: _currentUser?.id,
+      );
     }
   }
 
@@ -101,28 +106,25 @@ class _CorrespondenceDetailsScreenState
     // 1. WRAP IN CONSUMER
     return Consumer<DashboardController>(
       builder: (context, dashboardCtrl, child) {
-        // ✅ 3. THE BULLETPROOF TRIGGER
-        // If push_notification_service changes the badge count, we catch it instantly!
-        if (_lastTotalUnread != -1 &&
-            dashboardCtrl.totalUnread != _lastTotalUnread) {
-          _lastTotalUnread = dashboardCtrl.totalUnread;
+        // Reload on every dashboard update, not just when the aggregate
+        // total happens to change. numUnreadMessages/bRead can update
+        // without moving the global total (e.g. this thread was already
+        // unread), which previously meant messages after the first one
+        // silently stopped appearing until the screen was reopened.
+        Future.microtask(() async {
+          await _loadMessages();
 
-          // Silently fetch new messages
-          Future.microtask(() async {
-            await _loadMessages();
-
-            // Auto-scroll to show the new message
-            Future.delayed(const Duration(milliseconds: 100), () {
-              if (_scrollController.hasClients) {
-                _scrollController.animateTo(
-                  _scrollController.position.maxScrollExtent,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOut,
-                );
-              }
-            });
+          // Auto-scroll to show the new message
+          Future.delayed(const Duration(milliseconds: 100), () {
+            if (_scrollController.hasClients) {
+              _scrollController.animateTo(
+                _scrollController.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            }
           });
-        }
+        });
         return Scaffold(
           appBar: AppHeader(
             title: "ConversationView",
