@@ -79,12 +79,35 @@ class _CorrespondenceDetailsScreenState
     final repo = loginCtrl.getDataRepository();
 
     if (repo != null) {
-      await repo.sendCorrespondenceReply(
-        correspondenceId: widget.item.id,
-        message: text,
-        authService: loginCtrl.authService,
-        userId: _currentUser?.id ?? "",
-      );
+      try {
+        final res = await repo.sendCorrespondenceReply(
+          correspondenceId: widget.item.id,
+          message: text,
+          authService: loginCtrl.authService,
+          userId: _currentUser?.id ?? "",
+        );
+
+        if (res['success'] != true) {
+          throw Exception(res['message'] ?? 'Send failed');
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                  'Failed to send message. Check your connection and try again.'),
+              backgroundColor: Colors.red,
+              action: SnackBarAction(
+                label: 'RETRY',
+                textColor: Colors.white,
+                onPressed: _sendMessage,
+              ),
+            ),
+          );
+        }
+        // Keep the typed text in the field so nothing is lost on failure.
+        return;
+      }
 
       _replyController.clear();
       await _loadMessages();
