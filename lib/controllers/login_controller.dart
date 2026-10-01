@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:bla_flutter_app/constants/storage_strings.dart';
 import 'package:bla_flutter_app/db/sqlite.dart';
@@ -8,7 +9,6 @@ import 'package:bla_flutter_app/models/user_model.dart';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
 import 'package:bla_flutter_app/services/sercure_storage_service.dart';
 import 'package:bla_flutter_app/utils/helpers.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -754,16 +754,7 @@ class LoginController with ChangeNotifier {
         String? fcmToken =
             await PushNotificationService.instance.getDeviceToken();
         if (fcmToken != null) {
-          String deviceId = "unknown";
-          try {
-            final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
-            if (Platform.isAndroid) {
-              deviceId = (await deviceInfo.androidInfo).id;
-            } else if (Platform.isIOS) {
-              deviceId = (await deviceInfo.iosInfo).identifierForVendor ??
-                  "ios_unknown";
-            }
-          } catch (_) {}
+          String deviceId = await _getOrCreatePersistentDeviceId();
 
           await _dataRepository!.updateDeviceToken(
             fcmToken: fcmToken,
@@ -822,6 +813,38 @@ class LoginController with ChangeNotifier {
       }
     } catch (e) {
       print("Error syncing FCM token/topics: $e");
+    }
+  }
+
+  // Android's device_info_plus `.id` is actually the OS build ID (e.g.
+  // "SQ1D.220205.004"), which changes on every OS update - not a stable
+  // per-device identifier. Using it as deviceId meant updateDeviceToken()'s
+  // upsert never matched an existing row for a returning device, so
+  // user_fcm_tokens accumulated a new row per OS update/reinstall instead of
+  // updating one. Generate a UUID once and persist it instead, for both
+  // platforms, so the same install is recognized as the same device.
+  Future<String> _getOrCreatePersistentDeviceId() async {
+    const storageKey = 'device_install_id';
+    try {
+      String? existing =
+          await SecureStorageService.instance.read(key: storageKey);
+      if (existing != null && existing.isNotEmpty) return existing;
+
+      final random = Random.secure();
+      final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+      bytes[6] = (bytes[6] & 0x0F) | 0x40; // UUID v4 version bits
+      bytes[8] = (bytes[8] & 0x3F) | 0x80; // UUID v4 variant bits
+      final hex =
+          bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final uuid = '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+          '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
+          '${hex.substring(20)}';
+
+      await SecureStorageService.instance.write(key: storageKey, value: uuid);
+      return uuid;
+    } catch (e) {
+      print("Error generating persistent device id: $e");
+      return "unknown";
     }
   }
 }
