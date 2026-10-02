@@ -11,41 +11,54 @@ import 'package:flutter_app_badger/flutter_app_badger.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synchronized/synchronized.dart';
 import 'package:bla_flutter_app/utils/helpers.dart';
 import 'dart:convert';
+
+// Serializes read-modify-write access to the pending_payloads /
+// app_icon_badge_count SharedPreferences keys. Background messages can
+// arrive milliseconds apart (observed: 3 within 41ms), and without this
+// lock, two concurrent handler invocations could both read the same
+// starting list before either writes it back - whichever writes last
+// silently discards the other's addition (a lost-update race). Top-level
+// so it's shared by every invocation of the background handler below.
+final _pendingPayloadsLock = Lock();
 
 // 1. Top-level background handler (MUST be outside any class)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   print("Handling a background message: ${message.messageId}");
 
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.setBool('pending_background_sync', true);
+  await _pendingPayloadsLock.synchronized(() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('pending_background_sync', true);
 
-  // This background handler runs in its own isolate/engine, whose
-  // SharedPreferences cache can be stale relative to the main isolate's
-  // (e.g. right after the main isolate clears pending_payloads once it
-  // finishes processing them). Without reloading first, this could append
-  // onto an already-processed list and cause the same message to be
-  // handled - and its unread counter incremented - more than once.
-  await prefs.reload();
+    // This background handler runs in its own isolate/engine, whose
+    // SharedPreferences cache can be stale relative to the main isolate's
+    // (e.g. right after the main isolate clears pending_payloads once it
+    // finishes processing them). Without reloading first, this could append
+    // onto an already-processed list and cause the same message to be
+    // handled - and its unread counter incremented - more than once.
+    await prefs.reload();
 
-  // ✅ NEW: Queue the payload as a JSON string so the main app can process it when it wakes up!
-  List<String> pendingPayloads = prefs.getStringList('pending_payloads') ?? [];
-  pendingPayloads.add(jsonEncode(message.data));
-  await prefs.setStringList('pending_payloads', pendingPayloads);
+    // ✅ NEW: Queue the payload as a JSON string so the main app can process it when it wakes up!
+    List<String> pendingPayloads =
+        prefs.getStringList('pending_payloads') ?? [];
+    pendingPayloads.add(jsonEncode(message.data));
+    await prefs.setStringList('pending_payloads', pendingPayloads);
 
-  // Optimistic +1 on the OS icon badge: this isolate has no live DB/Provider
-  // access to compute the true unread total, so we bump a persisted counter
-  // instead. DashboardController.refreshCounts() resyncs this to the real
-  // count the next time the app is opened, synced, or gets a foreground push.
-  try {
-    final next = (prefs.getInt('app_icon_badge_count') ?? 0) + 1;
-    await prefs.setInt('app_icon_badge_count', next);
-    await FlutterAppBadger.updateBadgeCount(next);
-  } catch (e) {
-    print("Error bumping app icon badge in background: $e");
-  }
+    // Optimistic +1 on the OS icon badge: this isolate has no live DB/Provider
+    // access to compute the true unread total, so we bump a persisted counter
+    // instead. DashboardController.refreshCounts() resyncs this to the real
+    // count the next time the app is opened, synced, or gets a foreground push.
+    try {
+      final next = (prefs.getInt('app_icon_badge_count') ?? 0) + 1;
+      await prefs.setInt('app_icon_badge_count', next);
+      await FlutterAppBadger.updateBadgeCount(next);
+    } catch (e) {
+      print("Error bumping app icon badge in background: $e");
+    }
+  });
 }
 
 class PushNotificationService {
@@ -347,6 +360,13 @@ class PushNotificationService {
                 "SELECT diaryId FROM ${TableNames.diaries} WHERE diaryId = '${data['diaryId']}' AND studentId = '${student['id']}'");
             objDiary['studentId'] =
                 student['id']; // Set the studentId for this diary entry
+            // The bulk-sync path's `id` for a parent/student row is the
+            // server's app_users_notifications.id, which isn't present in
+            // the push payload. This client-only "{diaryId}-{studentId}"
+            // convention won't match that exactly on a later full sync, but
+            // it's stable and unique enough to let idx_diaries_unique_id
+            // dedupe repeat/retried pushes for the same student.
+            objDiary['id'] = '${data['diaryId']}-${student['id']}';
 
             if (existing.isEmpty) {
               // 2. Insert the new diary for EACH matching student
@@ -358,6 +378,18 @@ class PushNotificationService {
         } else {
           objDiary['classId'] = data['classId']; //
           objDiary['className'] = data['className']; //
+          // Mirrors the backend's own "Unique ID trick" for staff/class-
+          // scoped rows (API.class.php's getAPIDiaryList():
+          // CONCAT(d.id, '-', IFNULL(dc.classId, '0'))) so a push-inserted
+          // row's id matches what a later bulk sync would assign for the
+          // same diary+class, letting idx_diaries_unique_id correctly
+          // replace rather than duplicate it.
+          final rawClassId = data['classId'];
+          final normalizedClassId =
+              (rawClassId == null || rawClassId == 'all' || rawClassId == '')
+                  ? '0'
+                  : rawClassId.toString();
+          objDiary['id'] = '${data['diaryId']}-$normalizedClassId';
           await repo.saveDataToLocal(TableNames.diaries, objDiary);
           // print("✅ Diary inserted for staff & UI refreshed!");
         }
@@ -581,10 +613,21 @@ class PushNotificationService {
 
   // ✅ NEW: Process the background queue when the app wakes up
   Future<void> processPendingBackgroundPayloads() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
-    List<String> pendingPayloads =
-        prefs.getStringList('pending_payloads') ?? [];
+    // Claim the queue atomically (read then immediately clear, under the
+    // same lock the background handler uses) instead of reading now and
+    // clearing only after the whole loop below finishes. Previously, a
+    // message queued by the background handler *during* that loop would
+    // get silently wiped by the final clear, since it blindly reset the
+    // list to [] regardless of what had been added since the initial read.
+    List<String> pendingPayloads = [];
+    await _pendingPayloadsLock.synchronized(() async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      pendingPayloads = prefs.getStringList('pending_payloads') ?? [];
+      if (pendingPayloads.isNotEmpty) {
+        await prefs.setStringList('pending_payloads', []);
+      }
+    });
 
     if (pendingPayloads.isNotEmpty) {
       print(
@@ -600,13 +643,13 @@ class PushNotificationService {
             await _saveCorrespondenceLocally(data);
           } else if (type == 'diary_comment_new') {
             await _saveDiaryCommentLocally(data);
+          } else {
+            print("Skipping pending payload with unrecognized type '$type': $payloadStr");
           }
         } catch (e) {
           print("Error processing pending payload: $e");
         }
       }
-      // Wipe the queue once successfully saved to SQLite
-      await prefs.setStringList('pending_payloads', []);
     }
   }
 
