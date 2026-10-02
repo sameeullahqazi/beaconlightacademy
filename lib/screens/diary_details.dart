@@ -28,6 +28,7 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
 
   List<DiaryCommentModel> _comments = [];
   bool _isLoadingComments = true;
+  bool _isLoadingDetails = true;
 
   @override
   void initState() {
@@ -35,7 +36,27 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
     // ✅ Wait for screen transition to finish before hitting the database
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadComments();
+      _loadFullDetails();
     });
+  }
+
+  // The list screen only passes a 300-char preview of `details` (see
+  // getDiaries()), so fetch the full content once this diary is actually
+  // opened.
+  Future<void> _loadFullDetails() async {
+    final repo = Provider.of<LoginController>(context, listen: false)
+        .getDataRepository();
+    if (repo != null) {
+      final fullDetails = await repo.getDiaryDetailsById(widget.item.id);
+      if (mounted) {
+        setState(() {
+          widget.item.details = fullDetails;
+          _isLoadingDetails = false;
+        });
+      }
+    } else if (mounted) {
+      setState(() => _isLoadingDetails = false);
+    }
   }
 
   @override
@@ -71,7 +92,7 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
             notificationCount: dashboardCtrl.totalUnread,
           ),
           // ✅ 1. WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
-          body: _isLoadingComments
+          body: (_isLoadingComments || _isLoadingDetails)
               ? const Center(
                   child:
                       CircularProgressIndicator(color: AppColors.purplePrimary))

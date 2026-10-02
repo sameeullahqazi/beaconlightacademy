@@ -315,6 +315,17 @@ class _DiaryListTabState extends State<DiaryListTab> {
   StreamSubscription? _syncSubscription;
   StreamSubscription? _dbSubscription;
 
+  // _loadData() and _silentReload() both read/write the same _items/_offset
+  // state, with nothing to stop them racing - e.g. initState() firing
+  // _loadData(classId: null) before the class dropdown resolves, immediately
+  // followed by didUpdateWidget firing another _loadData with the real
+  // classId once it does. Whichever call's async query happened to resolve
+  // last would win regardless of which one was actually "fresher", able to
+  // append results from a stale/wrong class filter on top of (or instead
+  // of) the correct ones. Each load call captures the current generation
+  // and checks it's still current before applying its result.
+  int _loadGeneration = 0;
+
   @override
   void initState() {
     super.initState();
@@ -363,6 +374,7 @@ class _DiaryListTabState extends State<DiaryListTab> {
   }
 
   Future<void> _silentReload() async {
+    final myGeneration = ++_loadGeneration;
     try {
       int fetchLimit = _offset > _firstLimit ? _offset : _firstLimit;
       final newItems = await widget.repo.getDiaries(
@@ -373,18 +385,33 @@ class _DiaryListTabState extends State<DiaryListTab> {
         limit: fetchLimit,
         offset: 0,
       );
-      if (mounted) {
-        setState(() {
-          _items = newItems;
-        });
-      }
+      // A newer load (triggered by a classId/studentId change, or another
+      // reload) started after this one - discard this now-stale result
+      // instead of letting it clobber or mix with the fresher one.
+      if (!mounted || myGeneration != _loadGeneration) return;
+      setState(() {
+        _items = newItems;
+      });
     } catch (e) {
       print("Error silently reloading: $e");
     }
   }
 
   Future<void> _loadData({bool init = false}) async {
-    if (_isLoading || (!_hasMore && !init)) return;
+    // The _isLoading check only makes sense for pagination (init=false,
+    // scroll-triggered): no reason to fire an identical extra fetch while
+    // one's already in flight. For init=true (a genuine filter change, e.g.
+    // classId resolving from null to a real class once the dropdown loads),
+    // skipping because a now-stale load happens to still be in flight
+    // silently drops the one call that would have corrected it - observed:
+    // initState()'s classId=null load took 6s (unfiltered - much slower),
+    // and didUpdateWidget's classId=287 reload fired on top of it, triggered
+    // by the class resolving, then got silently swallowed, leaving the list
+    // stuck on wrong-class results indefinitely. init=true must always
+    // proceed and supersede any in-flight load via the generation check
+    // below instead of being gated by it.
+    if ((!init && _isLoading) || (!_hasMore && !init)) return;
+    final myGeneration = ++_loadGeneration;
 
     if (init) {
       setState(() {
@@ -406,6 +433,11 @@ class _DiaryListTabState extends State<DiaryListTab> {
         limit: init ? _firstLimit : _nextLimit,
         offset: _offset,
       );
+
+      // See _silentReload(): discard a stale result superseded by a newer
+      // load, rather than appending it onto (or clearing out from under) the
+      // fresher one's results.
+      if (!mounted || myGeneration != _loadGeneration) return;
 
       setState(() {
         if (newItems.length < (init ? _firstLimit : _nextLimit)) {
@@ -463,7 +495,12 @@ class _DiaryListTabState extends State<DiaryListTab> {
         : "Notice";
     final subtitleHeader = item.title ?? "";
     final rawDetails = item.details
-            ?.replaceAll(RegExp(r'<[^>]*>'), '')
+            // getDiaries() truncates `details` via SQL substr() for
+            // performance, which can cut a tag off mid-attribute (e.g.
+            // `<strong style="bac`) - that unclosed fragment has no `>` for
+            // the main tag-stripping regex to match, so strip it separately.
+            ?.replaceAll(RegExp(r'<[^>]*$'), '')
+            .replaceAll(RegExp(r'<[^>]*>'), '')
             .replaceAll('&nbsp;', ' ') ??
         "";
     final previewText = rawDetails.trim();
