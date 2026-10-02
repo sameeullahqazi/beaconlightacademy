@@ -24,16 +24,18 @@ import 'dart:convert';
 // so it's shared by every invocation of the background handler below.
 final _pendingPayloadsLock = Lock();
 
-// 1. Top-level background handler (MUST be outside any class)
-@pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  print("Handling a background message: ${message.messageId}");
-
+// Queues a payload into pending_payloads and sets the pending_background_sync
+// dirty flag, same as the background handler below - shared so the
+// foreground listener can defer a message to the same already-robust
+// "process once the app is ready" machinery (_checkColdStartDirtyFlag() /
+// processPendingBackgroundPayloads() in main.dart) instead of attempting a
+// direct save that needs Get.context before it may actually be available.
+Future<void> _queuePendingPayload(Map<String, dynamic> data) async {
   await _pendingPayloadsLock.synchronized(() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('pending_background_sync', true);
 
-    // This background handler runs in its own isolate/engine, whose
+    // This can run from the background isolate/engine, whose
     // SharedPreferences cache can be stale relative to the main isolate's
     // (e.g. right after the main isolate clears pending_payloads once it
     // finishes processing them). Without reloading first, this could append
@@ -44,7 +46,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     // ✅ NEW: Queue the payload as a JSON string so the main app can process it when it wakes up!
     List<String> pendingPayloads =
         prefs.getStringList('pending_payloads') ?? [];
-    pendingPayloads.add(jsonEncode(message.data));
+    pendingPayloads.add(jsonEncode(data));
     await prefs.setStringList('pending_payloads', pendingPayloads);
 
     // Optimistic +1 on the OS icon badge: this isolate has no live DB/Provider
@@ -59,6 +61,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       print("Error bumping app icon badge in background: $e");
     }
   });
+}
+
+// 1. Top-level background handler (MUST be outside any class)
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  print("Handling a background message: ${message.messageId}");
+  await _queuePendingPayload(message.data);
 }
 
 class PushNotificationService {
@@ -77,8 +86,19 @@ class PushNotificationService {
       print(
           '🔥 Got a message whilst in the foreground! ${message.messageId}, type: ${message.data['type']}, data: ${message.data}');
 
-      // ✅ Intercept and save the payload instantly
-      if (message.data['type'] == 'diary_new') {
+      // ✅ Intercept and save the payload instantly - but only if the widget
+      // tree is actually up. onMessage's listener is attached in main()
+      // before runApp() (so Firebase can start delivering messages right
+      // away), so a message landing in that brief window would otherwise
+      // hit Get.context! with nothing registered yet and throw
+      // (observed: "Error saving correspondence locally: Null check
+      // operator used on a null value" during cold start). Defer to the
+      // same pending_payloads queue + dirty flag the background handler
+      // uses, which _checkColdStartDirtyFlag() in main.dart already
+      // reliably drains once the app finishes booting.
+      if (Get.context == null) {
+        await _queuePendingPayload(message.data);
+      } else if (message.data['type'] == 'diary_new') {
         await _saveDiaryLocally(message.data);
       } else if (message.data['type'] == 'correspondence_new') {
         await _saveCorrespondenceLocally(message.data); // uncomment when ready
