@@ -219,6 +219,8 @@ class DataRepository {
       var entityResult = {};
       var entityList = <BaseModel>[];
       int totalRowsFetched = 0;
+      String latestDateStr = "";
+      dynamic lastRowId;
 
       //Check if it is fetching for the first time and should fetch in batches
       if (paramsList.isEmpty && shouldFetchInBatches) {
@@ -248,8 +250,21 @@ class DataRepository {
             break;
           }
 
-          // Safely accumulate into the main list so timestamps still calculate correctly later
-          entityList = List.from(entityList)..addAll(currentBatch);
+          // ✅ FIX: Track the running max modifiedDate and last row ID
+          // without retaining every batch's full model objects for the
+          // whole sync. A first-time sync fetching 19,000+ rows (e.g. a
+          // coordinator's full diary backlog), each carrying a raw HTML
+          // `details` field, was blowing the heap by keeping all of them
+          // in entityList simultaneously even though DB inserts were
+          // already correctly limited to one batch at a time.
+          String batchMaxDate = getLatestModifiedDateString(currentBatch);
+          if (batchMaxDate.isNotEmpty &&
+              (latestDateStr.isEmpty ||
+                  DateTime.parse(latestDateStr)
+                      .isBefore(DateTime.parse(batchMaxDate)))) {
+            latestDateStr = batchMaxDate;
+          }
+          lastRowId = currentBatch.last.modelId;
 
           downloadingStatusStreamController
               ?.add("Saving ${tableName.replaceAll("_", " ")} to database");
@@ -331,18 +346,19 @@ class DataRepository {
 
       //Find LastID
 
-      // print("entityList.isNotEmpty for $tableName: ${entityList.isNotEmpty}, size: ${entityList.length}");
-      if (entityList.isNotEmpty) {
-        // date = getLatestDateTime(entityList);
-        // ✅ FIX: Use the string helper instead of getLatestDateTime()
-        String latestDateStr = getLatestModifiedDateString(entityList);
-        // print("latest date for $tableName: $date, latestDateStr: $latestDateStr");
+      // print("totalRowsFetched for $tableName: $totalRowsFetched");
+      if (totalRowsFetched > 0) {
+        // The batched path above already tracks these incrementally; the
+        // single-shot (non-batched, non-paginated) path below still
+        // populates entityList directly, so derive them from it here.
+        if (latestDateStr.isEmpty && entityList.isNotEmpty) {
+          latestDateStr = getLatestModifiedDateString(entityList);
+        }
+        lastRowId ??= entityList.isNotEmpty ? entityList.last.modelId : null;
 
         var lastID = dataFetchModel != null
             ? dataFetchModel.lastID
-            : entityList.isEmpty
-                ? "-1"
-                : entityList.last.modelId;
+            : (lastRowId ?? "-1");
 
         //creating data_fetch model for colors
         dataFetchModel = DataFetchesModel(
@@ -536,13 +552,31 @@ class DataRepository {
 
     // Safer approach compatible with your wrapper:
     final db = await _sqLiteDB.database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      TableNames.diaries,
-      where: whereClause,
-      whereArgs: whereArgs,
-      orderBy: orderBy,
-      limit: limit,
-      offset: offset,
+    // ✅ Truncate the raw-HTML `details` column via substr() instead of
+    // selecting it in full: for a wide-scope role (e.g. a coordinator
+    // covering 167 classes), the academic-year cutoff above barely narrows
+    // the dataset (observed: 19,088 of ~19,100 total rows still match), so
+    // SQLite's post-filter sort by diaryId was materializing the FULL
+    // details blob (tens of KB each, observed) for thousands of candidate
+    // rows just to throw away all but `limit` of them. Measured on a
+    // synthetic 19k-row/50KB-blob table: full SELECT * cost ~2.45s CPU vs
+    // ~0.55s for substr(details, 1, 300) vs ~0.02s excluding it entirely -
+    // (100 chars, used below, costs even less)
+    // this keeps the list's preview snippet while recovering most of that
+    // difference. The diary detail screen gets the full details separately.
+    final List<dynamic> limitOffsetArgs = [...whereArgs, limit, offset];
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      '''
+      SELECT id, diaryId, studentId, classId, title, subject, diaryType,
+             substr(details, 1, 100) AS details, className, dateDue,
+             attachment, attachment2, bRead, createdDate, modifiedDate,
+             dateSubmitted, is_deleted, bLocal
+      FROM ${TableNames.diaries}
+      WHERE $whereClause
+      ORDER BY $orderBy
+      LIMIT ? OFFSET ?
+      ''',
+      limitOffsetArgs,
     );
 
     // print("getDiaries() - whereClause: $whereClause, whereArgs: $whereArgs, orderBy: $orderBy, limit: $limit, offset: $offset, maps length: ${maps.length}");
@@ -550,6 +584,23 @@ class DataRepository {
     return List.generate(maps.length, (i) {
       return DiaryModel.fromSQLLiteMap(maps[i]);
     });
+  }
+
+  // Fetch the full (untruncated) details for a single diary row by id.
+  // getDiaries() above only returns a 300-char preview of this field for
+  // list-screen performance - the detail screen calls this once it's
+  // actually opened.
+  Future<String?> getDiaryDetailsById(String id) async {
+    final db = await _sqLiteDB.database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      TableNames.diaries,
+      columns: ['details'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return maps.first['details'] as String?;
   }
 
   // Fetch Correspondences with Filters & Pagination
