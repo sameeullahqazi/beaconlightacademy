@@ -89,6 +89,28 @@ class _DiaryScreenState extends State<DiaryScreen> {
     }
   }
 
+  void _showClassPicker() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      builder: (context) {
+        return _ClassPickerSheet(
+          classes: _classes,
+          selectedClassId: _selectedClassId,
+          onSelected: (classId) {
+            setState(() {
+              _selectedClassId = classId;
+            });
+            _updateBadgeCounts();
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _updateBadgeCounts() async {
     final loginCtrl = Provider.of<LoginController>(context, listen: false);
     final dashCtrl = Provider.of<DashboardController>(context, listen: false);
@@ -214,27 +236,36 @@ class _DiaryScreenState extends State<DiaryScreen> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     color: Colors.white,
-                    child: DropdownButtonFormField<String>(
-                      decoration: InputDecoration(
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(4)),
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
+                    child: InkWell(
+                      onTap: _showClassPicker,
+                      child: InputDecorator(
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(4)),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 12),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _selectedClassId != null
+                                    ? (_classes.firstWhere(
+                                        (c) => c['id'] == _selectedClassId,
+                                        orElse: () =>
+                                            {'className': 'Select Class'},
+                                      )['className'] ??
+                                        'Select Class')
+                                    : 'Select Class',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const Icon(Icons.arrow_drop_down,
+                                color: Colors.grey),
+                          ],
+                        ),
                       ),
-                      value: _selectedClassId,
-                      hint: const Text("Select Class"),
-                      items: _classes
-                          .map((c) => DropdownMenuItem(
-                                value: c['id'],
-                                child: Text(c['className']!),
-                              ))
-                          .toList(),
-                      onChanged: (val) {
-                        setState(() {
-                          _selectedClassId = val;
-                        });
-                        _updateBadgeCounts();
-                      },
                     ),
                   ),
                 Expanded(
@@ -276,6 +307,98 @@ class _DiaryScreenState extends State<DiaryScreen> {
           bottomNavigationBar: const AppFooter(),
         );
       },
+    );
+  }
+}
+
+// --- SEARCHABLE CLASS PICKER ---
+class _ClassPickerSheet extends StatefulWidget {
+  final List<Map<String, String>> classes;
+  final String? selectedClassId;
+  final ValueChanged<String> onSelected;
+
+  const _ClassPickerSheet({
+    required this.classes,
+    required this.selectedClassId,
+    required this.onSelected,
+  });
+
+  @override
+  State<_ClassPickerSheet> createState() => _ClassPickerSheetState();
+}
+
+class _ClassPickerSheetState extends State<_ClassPickerSheet> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _query.isEmpty
+        ? widget.classes
+        : widget.classes
+            .where((c) => (c['className'] ?? '')
+                .toLowerCase()
+                .contains(_query.toLowerCase()))
+            .toList();
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.7,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: 'Search classes...',
+                    prefixIcon: const Icon(Icons.search),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(4)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                  ),
+                  onChanged: (val) => setState(() => _query = val),
+                ),
+              ),
+              Expanded(
+                child: filtered.isEmpty
+                    ? const Center(child: Text("No matching classes."))
+                    : ListView.builder(
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          final c = filtered[index];
+                          final isSelected = c['id'] == widget.selectedClassId;
+                          return ListTile(
+                            title: Text(c['className'] ?? ''),
+                            selected: isSelected,
+                            selectedTileColor: unreadBgColor,
+                            trailing: isSelected
+                                ? const Icon(Icons.check, color: navyBlue)
+                                : null,
+                            onTap: () {
+                              widget.onSelected(c['id']!);
+                              Navigator.pop(context);
+                            },
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
