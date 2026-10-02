@@ -175,6 +175,23 @@ CREATE TABLE classes (
 CREATE INDEX idx_diaries_optimized
     ON diaries(is_deleted, bRead, studentId, classId, diaryType, diaryId DESC);
 
+-- 1b. getDiaries()'s academic-year cutoff filter (is_deleted = 0 AND
+-- createdDate >= ?) isn't covered by idx_diaries_optimized above (no
+-- createdDate column in it), so it fell back to a near-full-table-scan
+-- once an account's local diaries table grew large.
+CREATE INDEX idx_diaries_date
+    ON diaries(is_deleted, createdDate, diaryId DESC);
+
+-- 1c. diaries has no primary key, so insertOrUpdate()'s ConflictAlgorithm
+-- .replace never actually triggered a replace - every sync/push just kept
+-- adding new rows for the same diary forever. Both the bulk sync path and
+-- the push-insert path (_saveDiaryLocally()) now construct a matching id
+-- ("{diaryId}-{classId}" for staff rows, mirroring the backend's own
+-- "Unique ID trick" in getAPIDiaryList()), so this lets REPLACE correctly
+-- dedupe going forward.
+CREATE UNIQUE INDEX idx_diaries_unique_id
+    ON diaries(id);
+
 -- 2. Master Index for Correspondences
 CREATE INDEX idx_corr_optimized
     ON correspondences(is_deleted, studentId, bRead, modifiedDate DESC);

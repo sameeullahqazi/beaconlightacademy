@@ -137,7 +137,61 @@ class SQLiteDB extends BaseDB {
         },
         // Set the version. This executes the onCreate function and provides a
         // path to perform database upgrades and downgrades.
-        version: 1,
+        version: 3,
+        onUpgrade: (db, oldVersion, newVersion) async {
+          // idx_diaries_optimized (is_deleted, bRead, studentId, classId,
+          // diaryType, diaryId DESC) doesn't cover createdDate, so
+          // getDiaries()'s "is_deleted = 0 AND createdDate >= ?" academic-year
+          // cutoff filter was a near-full-table-scan once an account's local
+          // diaries table grew into the tens of thousands of rows (observed:
+          // multi-second spinner opening the Diary screen / switching tabs
+          // for a coordinator role). This must run via onUpgrade, not just
+          // added to schema.sql, since real installed users already have a
+          // local DB and won't get a fresh schema.sql run on update.
+          if (oldVersion < 2) {
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_diaries_date ON diaries(is_deleted, createdDate, diaryId DESC);");
+          }
+
+          // The diaries table has never had a primary key or unique
+          // constraint, so insertOrUpdate()/executeTransaction()'s
+          // ConflictAlgorithm.replace never actually triggers - every sync
+          // and every push just keeps adding new rows for the same diary
+          // forever (observed on a real account: 19,293 rows for only
+          // 14,601 distinct diaryIds). Separately, the push-notification
+          // insert path never set `id` at all, unlike bulk sync (which gets
+          // "{diaryId}-{classId}" directly from the backend's own "Unique
+          // ID trick" - see API.class.php's getAPIDiaryList()), so
+          // push-inserted rows accumulated with a blank id and also showed
+          // up with incomplete fields (e.g. missing className) compared to
+          // their bulk-synced counterpart for the same diary. Now that the
+          // push path constructs a matching id (see push_notification_
+          // service.dart's _saveDiaryLocally()), backfill any existing rows
+          // still missing one, collapse exact-id duplicates down to the
+          // most recently-inserted copy, then add the unique index so
+          // REPLACE actually works going forward.
+          if (oldVersion < 3) {
+            await db.execute('''
+              UPDATE diaries
+              SET id = CAST(diaryId AS TEXT) || '-' || (
+                CASE
+                  WHEN studentId IS NOT NULL AND CAST(studentId AS TEXT) NOT IN ('', 'null')
+                    THEN CAST(studentId AS TEXT)
+                  WHEN classId IS NULL OR CAST(classId AS TEXT) IN ('', 'null')
+                    THEN '0'
+                  ELSE CAST(classId AS TEXT)
+                END
+              )
+              WHERE id IS NULL OR CAST(id AS TEXT) = '';
+            ''');
+            await db.execute('''
+              DELETE FROM diaries
+              WHERE rowid NOT IN (SELECT MAX(rowid) FROM diaries GROUP BY id);
+            ''');
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_diaries_unique_id ON diaries(id);");
+          }
+        },
         onConfigure: (Database db) async {
           // ✅ Add this line! It allows simultaneous reads and writes.
           // ToDo - disable this for testing purposes to see if it fixes the "database is locked" error
