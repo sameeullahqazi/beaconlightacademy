@@ -29,6 +29,7 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
   List<DiaryCommentModel> _comments = [];
   bool _isLoadingComments = true;
   bool _isLoadingDetails = true;
+  int _lastTotalUnread = -1;
 
   @override
   void initState() {
@@ -83,6 +84,22 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
   Widget build(BuildContext context) {
     return Consumer<DashboardController>(
       builder: (context, dashboardCtrl, child) {
+        // _saveDiaryCommentLocally() (push_notification_service.dart) calls
+        // DashboardController.refreshCounts() after saving a new comment,
+        // which calls notifyListeners() unconditionally - but totalUnread
+        // itself (diary + correspondence unread counts) never includes
+        // comments, so gating the reload on totalUnread actually changing
+        // (as DiaryScreen does for its list, where every relevant event
+        // does move that number) never fires for a comment-only event.
+        // Reload on every rebuild after the first instead - this screen's
+        // single-diary comment query is cheap enough that reloading on an
+        // unrelated DashboardController update too is an acceptable cost
+        // for actually catching comment arrivals reliably.
+        if (_lastTotalUnread != -1) {
+          Future.microtask(_loadComments);
+        }
+        _lastTotalUnread = dashboardCtrl.totalUnread;
+
         return Scaffold(
           appBar: AppHeader(
             title: widget.item.subject != null
