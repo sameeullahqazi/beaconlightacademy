@@ -794,19 +794,49 @@ class LoginController with ChangeNotifier {
         Set<String> topicsToAdd = newTopics.difference(oldTopics);
 
         // D. Execute only the changes
+        // ✅ FIX: subscribeToTopic()/unsubscribeFromTopic() can hang
+        // indefinitely (rather than throw) when Google Play Services is
+        // unreachable, which would otherwise block login on its loading
+        // spinner forever (this function runs before navigating to the
+        // dashboard) even though the actual data sync already succeeded.
+        // Each topic gets its own timeout + catch so one unreachable topic
+        // can't also block every other topic in the same loop. The actually-
+        // persisted topic set is built up from only the operations that
+        // really succeeded, not optimistically from newTopics - otherwise a
+        // topic that failed/timed out here would still get cached as
+        // "subscribed", and the diff above would never retry it later.
+        Set<String> actualTopics = Set.from(oldTopics);
+        bool anyChangeSucceeded = false;
+
         for (String topic in topicsToRemove) {
-          await FirebaseMessaging.instance.unsubscribeFromTopic(topic);
-          // print("🔕 Auto-Heal: Unsubscribed from stale topic -> $topic");
+          try {
+            await FirebaseMessaging.instance
+                .unsubscribeFromTopic(topic)
+                .timeout(const Duration(seconds: 10));
+            actualTopics.remove(topic);
+            anyChangeSucceeded = true;
+            // print("🔕 Auto-Heal: Unsubscribed from stale topic -> $topic");
+          } catch (e) {
+            print("Error unsubscribing from topic $topic: $e");
+          }
         }
 
         for (String topic in topicsToAdd) {
-          await FirebaseMessaging.instance.subscribeToTopic(topic);
-          // print("🔔 Auto-Heal: Subscribed to fresh topic -> $topic");
+          try {
+            await FirebaseMessaging.instance
+                .subscribeToTopic(topic)
+                .timeout(const Duration(seconds: 10));
+            actualTopics.add(topic);
+            anyChangeSucceeded = true;
+            // print("🔔 Auto-Heal: Subscribed to fresh topic -> $topic");
+          } catch (e) {
+            print("Error subscribing to topic $topic: $e");
+          }
         }
 
         // E. Save the new state if anything changed
-        if (topicsToRemove.isNotEmpty || topicsToAdd.isNotEmpty) {
-          await prefs.setStringList('subscribed_topics', newTopics.toList());
+        if (anyChangeSucceeded) {
+          await prefs.setStringList('subscribed_topics', actualTopics.toList());
         } else {
           // print("✅ FCM Topics are perfectly up to date.");
         }

@@ -613,14 +613,24 @@ class PushNotificationService {
   // --- FETCH TOKEN (Your existing code) ---
   Future<String?> getDeviceToken() async {
     try {
-      NotificationSettings settings = await _fcm.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
+      // ✅ FIX: these native Firebase Messaging calls can hang indefinitely
+      // (rather than throw) when Google Play Services is unreachable
+      // (observed: "SERVICE_NOT_AVAILABLE" logged natively, but nothing ever
+      // threw on the Dart side) - without a timeout, login gets stuck on its
+      // loading spinner forever even after the actual data sync already
+      // succeeded, since _syncFCMToken() runs this before navigating to the
+      // dashboard.
+      NotificationSettings settings = await _fcm
+          .requestPermission(
+            alert: true,
+            badge: true,
+            sound: true,
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        String? token = await _fcm.getToken();
+        String? token =
+            await _fcm.getToken().timeout(const Duration(seconds: 10));
         // print("🔥 FCM Device Token: $token");
         return token;
       }
