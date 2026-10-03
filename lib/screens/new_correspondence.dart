@@ -1,5 +1,6 @@
 import 'package:bla_flutter_app/components/app_header.dart';
 import 'package:bla_flutter_app/components/app_footer.dart';
+import 'package:bla_flutter_app/components/searchable_picker_sheet.dart';
 import 'package:bla_flutter_app/constants/table_names_strings.dart';
 import 'package:bla_flutter_app/controllers/dashboard_controller.dart';
 import 'package:bla_flutter_app/controllers/login_controller.dart';
@@ -124,19 +125,14 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
                       const Text("Select Class",
                           style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
-                      DropdownMenu<String>(
-                        expandedInsets: EdgeInsets.zero,
-                        enableFilter: true,
-                        enableSearch: true,
-                        requestFocusOnTap:
-                            true, // ✅ POPS THE KEYBOARD SO YOU CAN TYPE!
-                        hintText: "Type to search class...",
-                        inputDecorationTheme: _dropdownDecorTheme(),
-                        // initialSelection removed so it starts empty
-                        dropdownMenuEntries: _classes
-                            .map((c) => DropdownMenuEntry(
-                                value: c['id']!, label: c['className']!))
-                            .toList(),
+                      _buildPickerField(
+                        selectedId: _selectedClassId,
+                        items: _classes,
+                        idKey: 'id',
+                        labelKey: 'className',
+                        placeholder: 'Select Class',
+                        searchHint: 'Search classes...',
+                        emptyText: 'No matching classes.',
                         onSelected: (val) {
                           setState(() {
                             _selectedClassId = val;
@@ -148,20 +144,25 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
                       const Text("Select Student",
                           style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
-                      DropdownMenu<String>(
-                        key: ValueKey(
-                            _selectedClassId), // Forces reset when class changes
-                        expandedInsets: EdgeInsets.zero,
-                        enableFilter: true,
-                        enableSearch: true,
-                        requestFocusOnTap:
-                            true, // ✅ POPS THE KEYBOARD HERE TOO!
-                        hintText: "Type to search student...",
-                        inputDecorationTheme: _dropdownDecorTheme(),
-                        dropdownMenuEntries: _filteredContacts
-                            .map((c) => DropdownMenuEntry(
-                                value: c['studentId']!, label: c['name']!))
-                            .toList(),
+                      // contacts maps one student to multiple entries (e.g.
+                      // several subject-teachers, or multiple registered
+                      // parents - see the "SQLite Relational Mapping" note
+                      // in CLAUDE.md for this exact one-to-many pattern), so
+                      // filtering by class alone produces duplicate
+                      // studentId values here. Dedupe to one entry per
+                      // student, keeping the first (same contact the
+                      // onSelected lookup below would already pick via
+                      // firstWhere).
+                      _buildPickerField(
+                        selectedId: _selectedStudentId,
+                        items: {
+                          for (final c in _filteredContacts) c['studentId']!: c
+                        }.values.toList(),
+                        idKey: 'studentId',
+                        labelKey: 'name',
+                        placeholder: 'Select Student',
+                        searchHint: 'Search students...',
+                        emptyText: 'No matching students.',
                         onSelected: (val) {
                           setState(() {
                             _selectedStudentId = val;
@@ -181,16 +182,14 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
                       const Text("Select Student",
                           style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
-                      DropdownMenu<String>(
-                        expandedInsets: EdgeInsets.zero,
-                        enableFilter: false, // Small list, no search needed
-                        hintText: "Select your student...",
-                        inputDecorationTheme: _dropdownDecorTheme(),
-                        initialSelection: _selectedStudentId,
-                        dropdownMenuEntries: _students
-                            .map((s) => DropdownMenuEntry(
-                                value: s['id']!, label: s['name']!))
-                            .toList(),
+                      _buildPickerField(
+                        selectedId: _selectedStudentId,
+                        items: _students,
+                        idKey: 'id',
+                        labelKey: 'name',
+                        placeholder: 'Select Student',
+                        searchHint: 'Search students...',
+                        emptyText: 'No matching students.',
                         onSelected: (val) {
                           setState(() {
                             _selectedStudentId = val;
@@ -202,16 +201,14 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
                       const Text("Select Contact (Teacher)",
                           style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
-                      DropdownMenu<String>(
-                        expandedInsets: EdgeInsets.zero,
-                        enableFilter: true,
-                        enableSearch: true,
-                        hintText: "Type to search teacher...",
-                        inputDecorationTheme: _dropdownDecorTheme(),
-                        dropdownMenuEntries: _filteredContacts
-                            .map((c) => DropdownMenuEntry(
-                                value: c['id']!, label: c['name']!))
-                            .toList(),
+                      _buildPickerField(
+                        selectedId: _selectedContactId,
+                        items: _filteredContacts,
+                        idKey: 'id',
+                        labelKey: 'name',
+                        placeholder: 'Select Contact',
+                        searchHint: 'Search teachers...',
+                        emptyText: 'No matching teachers.',
                         onSelected: (val) =>
                             setState(() => _selectedContactId = val),
                       ),
@@ -270,16 +267,66 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
     );
   }
 
-  // Consistent styling for the new DropdownMenu
-  InputDecorationTheme _dropdownDecorTheme() {
-    return InputDecorationTheme(
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(4),
-          borderSide: BorderSide(color: Colors.grey.shade400)),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      isDense: true,
+  // ✅ Tap target that opens the shared searchable bottom-sheet picker,
+  // styled to match the form's other fields. Replaces DropdownMenu
+  // throughout this screen after hitting three separate bugs with it here:
+  // a RangeError crash on a large class list (155 classes), the student
+  // list silently narrowing to one entry because enableFilter treats
+  // initialSelection's pre-filled text as an active search query, and the
+  // same underlying issue making the contact field look like search wasn't
+  // working at all.
+  Widget _buildPickerField({
+    required String? selectedId,
+    required List<Map<String, String>> items,
+    required String idKey,
+    required String labelKey,
+    required String placeholder,
+    required String searchHint,
+    required String emptyText,
+    required ValueChanged<String> onSelected,
+  }) {
+    return InkWell(
+      onTap: () => showSearchablePicker(
+        context: context,
+        items: items,
+        idKey: idKey,
+        labelKey: labelKey,
+        selectedId: selectedId,
+        searchHint: searchHint,
+        emptyText: emptyText,
+        onSelected: onSelected,
+      ),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: BorderSide(color: Colors.grey.shade400)),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          isDense: true,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                selectedId != null
+                    ? (items.firstWhere(
+                          (i) => i[idKey] == selectedId,
+                          orElse: () => {labelKey: placeholder},
+                        )[labelKey] ??
+                        placeholder)
+                    : placeholder,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down, color: Colors.grey),
+          ],
+        ),
+      ),
     );
   }
+
 
   Widget _buildTextField(TextEditingController controller, String hint,
       {int maxLines = 1}) {

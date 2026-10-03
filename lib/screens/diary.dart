@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:bla_flutter_app/components/app_header.dart';
 import 'package:bla_flutter_app/components/app_footer.dart';
+import 'package:bla_flutter_app/components/searchable_picker_sheet.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
@@ -90,23 +91,19 @@ class _DiaryScreenState extends State<DiaryScreen> {
   }
 
   void _showClassPicker() {
-    showModalBottomSheet(
+    showSearchablePicker(
       context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-      ),
-      builder: (context) {
-        return _ClassPickerSheet(
-          classes: _classes,
-          selectedClassId: _selectedClassId,
-          onSelected: (classId) {
-            setState(() {
-              _selectedClassId = classId;
-            });
-            _updateBadgeCounts();
-          },
-        );
+      items: _classes,
+      idKey: 'id',
+      labelKey: 'className',
+      selectedId: _selectedClassId,
+      searchHint: 'Search classes...',
+      emptyText: 'No matching classes.',
+      onSelected: (classId) {
+        setState(() {
+          _selectedClassId = classId;
+        });
+        _updateBadgeCounts();
       },
     );
   }
@@ -307,98 +304,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
           bottomNavigationBar: const AppFooter(),
         );
       },
-    );
-  }
-}
-
-// --- SEARCHABLE CLASS PICKER ---
-class _ClassPickerSheet extends StatefulWidget {
-  final List<Map<String, String>> classes;
-  final String? selectedClassId;
-  final ValueChanged<String> onSelected;
-
-  const _ClassPickerSheet({
-    required this.classes,
-    required this.selectedClassId,
-    required this.onSelected,
-  });
-
-  @override
-  State<_ClassPickerSheet> createState() => _ClassPickerSheetState();
-}
-
-class _ClassPickerSheetState extends State<_ClassPickerSheet> {
-  final TextEditingController _searchController = TextEditingController();
-  String _query = '';
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final filtered = _query.isEmpty
-        ? widget.classes
-        : widget.classes
-            .where((c) => (c['className'] ?? '')
-                .toLowerCase()
-                .contains(_query.toLowerCase()))
-            .toList();
-
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.7,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: TextField(
-                  controller: _searchController,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    hintText: 'Search classes...',
-                    prefixIcon: const Icon(Icons.search),
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(4)),
-                    contentPadding:
-                        const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                  ),
-                  onChanged: (val) => setState(() => _query = val),
-                ),
-              ),
-              Expanded(
-                child: filtered.isEmpty
-                    ? const Center(child: Text("No matching classes."))
-                    : ListView.builder(
-                        itemCount: filtered.length,
-                        itemBuilder: (context, index) {
-                          final c = filtered[index];
-                          final isSelected = c['id'] == widget.selectedClassId;
-                          return ListTile(
-                            title: Text(c['className'] ?? ''),
-                            selected: isSelected,
-                            selectedTileColor: unreadBgColor,
-                            trailing: isSelected
-                                ? const Icon(Icons.check, color: navyBlue)
-                                : null,
-                            onTap: () {
-                              widget.onSelected(c['id']!);
-                              Navigator.pop(context);
-                            },
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
