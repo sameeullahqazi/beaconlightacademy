@@ -330,9 +330,19 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
 
   Widget _buildTextField(TextEditingController controller, String hint,
       {int maxLines = 1}) {
+    // ✅ FIX: without this, the field had no dedicated newline key on the
+    // on-screen keyboard - Enter either did nothing or acted as a "Done"/
+    // submit action instead of inserting a line break, so users couldn't
+    // intentionally split a message into separate lines/paragraphs (hence
+    // it always posted as one merged block). maxLines > 1 alone only
+    // controls visual auto-wrap, not what Enter does.
+    final isMultiline = maxLines > 1;
     return TextFormField(
       controller: controller,
       maxLines: maxLines,
+      keyboardType: isMultiline ? TextInputType.multiline : TextInputType.text,
+      textInputAction:
+          isMultiline ? TextInputAction.newline : TextInputAction.done,
       decoration: InputDecoration(
         hintText: hint,
         border: OutlineInputBorder(

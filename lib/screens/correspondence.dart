@@ -308,6 +308,15 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     );
   }
 
+  // Extracts just "EEE, dd/MM/yyyy" from item.date, which may or may not
+  // have a time portion trailing it depending on when/how the row was
+  // saved - always keeping just the first two tokens handles both.
+  String _dateOnly(String? date) {
+    if (date == null || date.isEmpty) return "";
+    final parts = date.trim().split(' ');
+    return parts.take(2).join(' ');
+  }
+
   Widget _buildCorrespondenceItem(CorrespondenceModel item) {
     // Determine background highlight
     final bool isUnread = item.bRead == 0;
@@ -421,8 +430,14 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      // ✅ Date only, no time - the full timestamp was
+                      // crowding out the subject, truncating titles that
+                      // didn't need to be cut off (e.g. "Concern regardi...").
+                      // item.date is "EEE, dd/MM/yyyy hh:mm:ss a"; the first
+                      // two space-separated tokens are the weekday+date
+                      // regardless of whether a time portion follows.
                       Text(
-                        item.date ?? "",
+                        _dateOnly(item.date),
                         style: TextStyle(
                             color: Colors.grey.shade600, fontSize: 12),
                       ),

@@ -330,6 +330,12 @@ class _CorrespondenceDetailsScreenState
                 ),
                 minLines: 1,
                 maxLines: 3,
+                // ✅ FIX: no dedicated newline key without this - Enter
+                // either did nothing or acted as a submit/done action, so a
+                // reply could never be intentionally split across lines and
+                // always posted as one merged paragraph.
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
               ),
             ),
           ),
