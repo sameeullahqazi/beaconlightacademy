@@ -470,8 +470,16 @@ class PushNotificationService {
           // threads whose modifiedDate was already converted. Mutate `data`
           // itself (not just inline) so the message insert further below,
           // shared by both branches, also picks up the converted values.
-          data['date'] = utcToLocal(data['date']);
+          //
+          // `date` is derived from the now-converted `createdDate` rather
+          // than converting data['date'] directly: the payload's `date`
+          // field is already formatted ("Sat, 03/10/2026 05:33:16 AM"),
+          // which utcToLocal() can't parse (it needs an ISO-ish string) -
+          // it silently returned that string unconverted, leaving the
+          // displayed time ~5 hours behind the correctly-converted
+          // modifiedDate.
           data['createdDate'] = utcToLocal(data['createdDate']);
+          data['date'] = formatLocalDisplayDate(data['createdDate']);
           await repo.saveDataToLocal(TableNames.correspondences, {
             'id': corrId, // <-- Int
             'studentId': data['studentId'],
@@ -496,8 +504,10 @@ class PushNotificationService {
           // Thread exists! Just update the preview snippet and mark unread
           // ✅ Convert dates to PST before saving!
           // print("about to update existing thread with new message preview and unread status");
-          data['date'] = utcToLocal(data['date']);
+          // See the new-thread branch above for why `date` is derived from
+          // `createdDate` rather than converted directly.
           data['createdDate'] = utcToLocal(data['createdDate']);
+          data['date'] = formatLocalDisplayDate(data['createdDate']);
           await repo.rawUpdate(
               "UPDATE ${TableNames.correspondences} SET bRead = 0, message = ?, date = ?, modifiedDate = ?, numUnreadMessages = IFNULL(numUnreadMessages, 0) + 1 WHERE id = ?",
               [

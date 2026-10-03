@@ -1291,7 +1291,12 @@ class DataRepository {
             'studentName': studentName, // ✅ Added student name
             'subject': subject,
             'message': message,
-            'date': DateFormat('EEE, dd/MM/yyyy').format(DateTime.now()),
+            // ✅ FIX: was missing the time component entirely ("Sat,
+            // 03/10/2026" with no timestamp), unlike every other date
+            // field in this app - matches the format the push-received
+            // path now uses (see formatLocalDisplayDate() in helpers.dart).
+            'date': DateFormat('EEE, dd/MM/yyyy hh:mm:ss a')
+                .format(DateTime.now()),
             'senderName': senderName,
             'contactName': "Teacher",
             'bRead': 1,
@@ -1436,8 +1441,10 @@ class DataRepository {
           'senderId': userId,
           'senderName': senderName, // ✅ Now populated
           'message': message,
-          'date':
-              DateFormat('EEE, dd/MM/yyyy').format(DateTime.now()), // ✅ Added
+          // ✅ FIX: was missing the time component (see addNewCorrespondence()
+          // above for the same fix and why).
+          'date': DateFormat('EEE, dd/MM/yyyy hh:mm:ss a').format(
+              DateTime.now()), // ✅ Added
           'createdDate': formattedDate, // ✅ Clean format
           'modifiedDate': formattedDate, // ✅ Clean format
           'is_deleted': 0,

@@ -398,6 +398,27 @@ String utcToLocal(String? dateStr) {
     return dateStr; // Fallback if parsing fails
   }
 }
+
+// Reformats an already-converted local ISO-ish timestamp (utcToLocal()'s
+// own output, "yyyy-MM-dd HH:mm:ss") into the human-readable style the UI
+// displays, matching the backend's own DATETIME_FORMAT ('%a, %d/%m/%Y %r'
+// -> "Sat, 03/10/2026 05:33:16 AM"). Needed because the backend's push
+// payload separately sends a *pre-formatted* copy of this same moment in
+// that human-readable style, which utcToLocal() can't parse (DateTime.parse
+// requires an ISO-ish string) - it silently fell back to returning that
+// string unconverted, so displayed times stayed in UTC (observed: 5 hours
+// behind Pakistan local time) even though the ISO-format copy converted
+// correctly. Deriving the display string from the one that's guaranteed to
+// parse keeps both representations of the same moment in sync.
+String formatLocalDisplayDate(String? localIsoDateStr) {
+  if (localIsoDateStr == null || localIsoDateStr.isEmpty) return '';
+  try {
+    DateTime parsed = DateTime.parse(localIsoDateStr.trim());
+    return DateFormat('EEE, dd/MM/yyyy hh:mm:ss a').format(parsed);
+  } catch (e) {
+    return localIsoDateStr;
+  }
+}
 /*
 // Samee - Custom Image Widget that checks if the image is present locally, otherwise fetches it from the server
 class UtilImage extends StatefulWidget {
