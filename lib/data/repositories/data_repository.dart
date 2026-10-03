@@ -494,6 +494,7 @@ class DataRepository {
     int limit = 100, // Default to 100
     int offset = 0, // Default to 0 (start)
     bool? isTimetable,
+    String? searchQuery,
   }) async {
     String whereClause = "is_deleted = 0";
     List<dynamic> whereArgs = [];
@@ -532,6 +533,16 @@ class DataRepository {
     else if (isTimetable == false) {
       whereClause +=
           " AND NOT (title LIKE '%timetable%' OR title LIKE '%time table%')";
+    }
+
+    // Search by title or details (full, untruncated column - the substr()
+    // in the SELECT below only limits what's returned for the preview, not
+    // what this WHERE clause can match against).
+    if (searchQuery != null && searchQuery.trim().isNotEmpty) {
+      whereClause += " AND (title LIKE ? OR details LIKE ?)";
+      final likeArg = '%${searchQuery.trim()}%';
+      whereArgs.add(likeArg);
+      whereArgs.add(likeArg);
     }
 
     // Order by date descending
@@ -608,6 +619,7 @@ class DataRepository {
     String? studentId,
     int limit = 100,
     int offset = 0,
+    String? searchQuery,
   }) async {
     String whereClause = "is_deleted = 0";
     List<dynamic> whereArgs = [];
@@ -620,6 +632,14 @@ class DataRepository {
     if (studentId != null) {
       whereClause += " AND studentId = ?";
       whereArgs.add(studentId);
+    }
+
+    // Search by subject or the thread's last-message preview.
+    if (searchQuery != null && searchQuery.trim().isNotEmpty) {
+      whereClause += " AND (subject LIKE ? OR message LIKE ?)";
+      final likeArg = '%${searchQuery.trim()}%';
+      whereArgs.add(likeArg);
+      whereArgs.add(likeArg);
     }
 
     // Order by date descending (newest first)

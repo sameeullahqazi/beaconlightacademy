@@ -24,11 +24,43 @@ class CorrespondenceScreen extends StatefulWidget {
 class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
   String? _currentStudentId;
 
+  bool _isSearching = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
+
   @override
   void initState() {
     super.initState();
     final dashCtrl = Provider.of<DashboardController>(context, listen: false);
     _currentStudentId = dashCtrl.selectedStudentId;
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  void _toggleSearch() {
+    setState(() {
+      if (_isSearching) {
+        _isSearching = false;
+        _searchQuery = '';
+        _searchController.clear();
+      } else {
+        _isSearching = true;
+      }
+    });
+  }
+
+  // Debounced so CorrespondenceList doesn't re-query on every keystroke.
+  void _onSearchChanged(String val) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) setState(() => _searchQuery = val);
+    });
   }
 
   @override
@@ -45,11 +77,17 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
             showBackButton: true,
             backgroundColor: AppColors.purplePrimary,
             notificationCount: dashboardCtrl.totalUnread,
+            showSearch: true,
+            isSearching: _isSearching,
+            searchController: _searchController,
+            onSearchToggle: _toggleSearch,
+            onSearchChanged: _onSearchChanged,
           ),
           body: Stack(
             children: [
               CorrespondenceList(
                 studentId: _currentStudentId, // ✅ Removed the totalUnread trap!
+                searchQuery: _searchQuery,
               ),
               Positioned(
                 right: 16,
@@ -79,9 +117,12 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
 // --- PART 2: THE REUSABLE LIST WIDGET ---
 class CorrespondenceList extends StatefulWidget {
   final String? studentId;
+  final String searchQuery;
 
   const CorrespondenceList(
-      {super.key, required this.studentId}); // ✅ Cleaned up constructor
+      {super.key,
+      required this.studentId,
+      this.searchQuery = ''}); // ✅ Cleaned up constructor
 
   @override
   State<CorrespondenceList> createState() => _CorrespondenceListState();
@@ -157,7 +198,9 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
   void didUpdateWidget(covariant CorrespondenceList oldWidget) {
     super.didUpdateWidget(oldWidget);
     // ✅ 4. Cleaned up didUpdateWidget
-    if (!_isFirstBuild && oldWidget.studentId != widget.studentId) {
+    if (!_isFirstBuild &&
+        (oldWidget.studentId != widget.studentId ||
+            oldWidget.searchQuery != widget.searchQuery)) {
       _loadData(init: true);
     }
   }
@@ -197,6 +240,7 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
 
       final newItems = await repo.getCorrespondences(
         studentId: widget.studentId,
+        searchQuery: widget.searchQuery,
         limit: init ? _firstLimit : _nextLimit,
         offset: _offset,
       );

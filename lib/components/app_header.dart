@@ -13,6 +13,15 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
   final String title;
   final bool showBackButton;
   final int notificationCount;
+  // ✅ Opt-in search support, used by the Diary and Correspondence list
+  // screens in place of the bell icon (which has never done anything -
+  // onPressed was always a no-op). Left false/null everywhere else so
+  // every other screen using this header is unaffected.
+  final bool showSearch;
+  final bool isSearching;
+  final TextEditingController? searchController;
+  final ValueChanged<String>? onSearchChanged;
+  final VoidCallback? onSearchToggle;
 
   const AppHeader({
     super.key,
@@ -20,6 +29,11 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
     this.showBackButton = false,
     this.notificationCount = 0,
     Color backgroundColor = navyBlue, // ✅ Default to Navy Blue
+    this.showSearch = false,
+    this.isSearching = false,
+    this.searchController,
+    this.onSearchChanged,
+    this.onSearchToggle,
   });
 
   @override
@@ -61,17 +75,37 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
                 icon: const Icon(Icons.home, color: Colors.white),
                 onPressed: () => Navigator.pushNamed(context, '/dashboard'),
               ),
-        title: Text(title, style: const TextStyle(color: Colors.white)),
+        title: (showSearch && isSearching)
+            ? TextField(
+                controller: searchController,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                cursorColor: Colors.white,
+                decoration: const InputDecoration(
+                  hintText: "Search...",
+                  hintStyle: TextStyle(color: Colors.white70),
+                  border: InputBorder.none,
+                ),
+                onChanged: onSearchChanged,
+              )
+            : Text(title, style: const TextStyle(color: Colors.white)),
         actions: [
-          // Bell Icon with Global Count (Badge defaults to Red)
-          IconButton(
-            icon: Badge(
-              isLabelVisible: notificationCount > 0,
-              label: Text(notificationCount.toString()),
-              child: const Icon(Icons.notifications, color: Colors.white),
+          if (showSearch)
+            IconButton(
+              icon: Icon(isSearching ? Icons.close : Icons.search,
+                  color: Colors.white),
+              onPressed: onSearchToggle,
+            )
+          else
+            // Bell Icon with Global Count (Badge defaults to Red)
+            IconButton(
+              icon: Badge(
+                isLabelVisible: notificationCount > 0,
+                label: Text(notificationCount.toString()),
+                child: const Icon(Icons.notifications, color: Colors.white),
+              ),
+              onPressed: () {},
             ),
-            onPressed: () {},
-          ),
 
           // 2. DYNAMIC DROPDOWN
           _buildStudentDropdown(

@@ -40,6 +40,11 @@ class _DiaryScreenState extends State<DiaryScreen> {
   int _refreshTrigger = 0;
   StreamSubscription? _dbSubscription;
 
+  bool _isSearching = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -64,7 +69,32 @@ class _DiaryScreenState extends State<DiaryScreen> {
   @override
   void dispose() {
     _dbSubscription?.cancel();
+    _searchController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  void _toggleSearch() {
+    setState(() {
+      if (_isSearching) {
+        // Closing: clear so the list resets back to the unfiltered view.
+        _isSearching = false;
+        _searchQuery = '';
+        _searchController.clear();
+      } else {
+        _isSearching = true;
+      }
+    });
+  }
+
+  // Debounced so each DiaryListTab doesn't re-query on every keystroke -
+  // didUpdateWidget below already treats a searchQuery change like a
+  // classId change (a full reload), which would otherwise fire that often.
+  void _onSearchChanged(String val) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) setState(() => _searchQuery = val);
+    });
   }
 
   Future<void> _loadClasses() async {
@@ -179,6 +209,11 @@ class _DiaryScreenState extends State<DiaryScreen> {
             title: "Diary",
             showBackButton: true,
             notificationCount: dashboardCtrl.totalUnread,
+            showSearch: true,
+            isSearching: _isSearching,
+            searchController: _searchController,
+            onSearchToggle: _toggleSearch,
+            onSearchChanged: _onSearchChanged,
           ),
           body: DefaultTabController(
             length: 3,
@@ -275,6 +310,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         classId: _isStaff ? _selectedClassId : null,
                         types: const ['cw', 'hw'],
                         refreshTrigger: _refreshTrigger,
+                        searchQuery: _searchQuery,
                       ),
                       DiaryListTab(
                         repo: repo,
@@ -284,6 +320,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         types: const ['gn', 'fd', 'ch'],
                         isTimetable: false, // 🚀 Explicitly exclude timetables
                         refreshTrigger: _refreshTrigger,
+                        searchQuery: _searchQuery,
                       ),
                       DiaryListTab(
                         repo: repo,
@@ -294,6 +331,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         isTimetable:
                             true, // 🚀 Explicitly fetch ONLY timetables
                         refreshTrigger: _refreshTrigger,
+                        searchQuery: _searchQuery,
                       ),
                     ],
                   ),
@@ -316,6 +354,7 @@ class DiaryListTab extends StatefulWidget {
   final List<String> types;
   final int refreshTrigger;
   final bool? isTimetable; // ✅ 1. NEW PROPERTY
+  final String searchQuery;
 
   const DiaryListTab({
     super.key,
@@ -325,6 +364,7 @@ class DiaryListTab extends StatefulWidget {
     required this.types,
     this.refreshTrigger = 0,
     this.isTimetable, // ✅ Initialize
+    this.searchQuery = '',
   });
 
   @override
@@ -394,7 +434,8 @@ class _DiaryListTabState extends State<DiaryListTab> {
   void didUpdateWidget(covariant DiaryListTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.studentId != widget.studentId ||
-        oldWidget.classId != widget.classId) {
+        oldWidget.classId != widget.classId ||
+        oldWidget.searchQuery != widget.searchQuery) {
       _loadData(init: true);
     } else if (oldWidget.refreshTrigger != widget.refreshTrigger) {
       _silentReload();
@@ -410,6 +451,7 @@ class _DiaryListTabState extends State<DiaryListTab> {
         classId: widget.classId,
         types: widget.types,
         isTimetable: widget.isTimetable, // ✅ Pass to repository
+        searchQuery: widget.searchQuery,
         limit: fetchLimit,
         offset: 0,
       );
@@ -458,6 +500,7 @@ class _DiaryListTabState extends State<DiaryListTab> {
         classId: widget.classId,
         types: widget.types,
         isTimetable: widget.isTimetable, // ✅ Pass to repository
+        searchQuery: widget.searchQuery,
         limit: init ? _firstLimit : _nextLimit,
         offset: _offset,
       );
