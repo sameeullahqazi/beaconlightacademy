@@ -159,7 +159,7 @@ class _CorrespondenceDetailsScreenState
         });
         return Scaffold(
           appBar: AppHeader(
-            title: "ConversationView",
+            title: widget.item.subject ?? "Conversation",
             showBackButton: true,
             backgroundColor: AppColors.purplePrimary,
             // 2. PASS THE COUNT
