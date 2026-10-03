@@ -474,6 +474,7 @@ class PushNotificationService {
           data['createdDate'] = utcToLocal(data['createdDate']);
           await repo.saveDataToLocal(TableNames.correspondences, {
             'id': corrId, // <-- Int
+            'studentId': data['studentId'],
             'subject': data['correspondenceTitle'],
             'message': data['message'],
             'date': data['date'],
