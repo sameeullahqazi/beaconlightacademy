@@ -156,12 +156,22 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
                             widget.item.attachment2 != null)
                           _buildAttachments(
                               widget.item.attachment, widget.item.attachment2),
-                        const SizedBox(height: 32),
-                        const Divider(height: 1),
-                        const SizedBox(height: 16),
-                        _isLoadingComments
-                            ? const Center(child: CircularProgressIndicator())
-                            : _buildCommentsSection(_comments),
+                        // ✅ Diary comments temporarily disabled 2026-10-03
+                        // (mutual staff decision - Samee + Andaleeb, school
+                        // head) after reports of abusive/offensive parent
+                        // comments, even with the staff-only-visibility
+                        // restriction added 2026-10-02. Commented out rather
+                        // than removed in case the decision is revisited -
+                        // the loading/fetch logic above (_loadComments(),
+                        // the live-refresh wiring in build()) is left intact
+                        // so re-enabling this is just uncommenting the block
+                        // below.
+                        // const SizedBox(height: 32),
+                        // const Divider(height: 1),
+                        // const SizedBox(height: 16),
+                        // _isLoadingComments
+                        //     ? const Center(child: CircularProgressIndicator())
+                        //     : _buildCommentsSection(_comments),
                       ],
                     ),
                   ),
