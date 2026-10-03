@@ -61,11 +61,20 @@ class _CorrespondenceDetailsScreenState
       // user is already looking right at it. Re-mark it read on every load
       // (including live updates) so it doesn't pile up an unread count
       // behind the user's back while this screen is open.
-      await repo.markCorrespondenceAsRead(
-        widget.item.id,
-        authService: loginCtrl.authService,
-        userId: _currentUser?.id,
-      );
+      //
+      // Wrapped: this runs on every load/live-refresh of this screen (not
+      // just once), so a transient network hiccup here was an unhandled
+      // exception on a fairly hot path - the messages themselves already
+      // loaded and displayed above regardless of whether this call succeeds.
+      try {
+        await repo.markCorrespondenceAsRead(
+          widget.item.id,
+          authService: loginCtrl.authService,
+          userId: _currentUser?.id,
+        );
+      } catch (e) {
+        print("Background read sync failed: $e");
+      }
     }
   }
 

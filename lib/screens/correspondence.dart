@@ -280,11 +280,15 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
           final loginCtrl =
               Provider.of<LoginController>(context, listen: false);
           final repo = loginCtrl.getDataRepository();
-          repo?.markCorrespondenceAsRead(
-            item.id,
-            authService: loginCtrl.authService,
-            userId: loginCtrl.getUser?.id,
-          );
+          repo
+              ?.markCorrespondenceAsRead(
+                item.id,
+                authService: loginCtrl.authService,
+                userId: loginCtrl.getUser?.id,
+              )
+              .catchError((e) {
+            print("Background read sync failed: $e");
+          });
           if (context.mounted) {
             Provider.of<DashboardController>(context, listen: false)
                 .refreshCounts();
