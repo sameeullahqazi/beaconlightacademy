@@ -220,7 +220,9 @@ class LoginController with ChangeNotifier {
               Get.back(); // Close Dialog
               initControllers();
 
-              await _syncFCMToken(); // ✅ ADD THIS HERE
+              // ✅ FIX: fire-and-forget, not awaited - see the other
+              // _syncFCMToken() call sites in this file for why.
+              _syncFCMToken();
               // print("First Login Success: Navigating to Dashboard");
               Get.offNamed('/dashboard');
             } else {
@@ -282,7 +284,7 @@ class LoginController with ChangeNotifier {
                 key: StorageStringsConstants.userDataKey,
                 value: jsonEncode(_user!.toMap()));
 
-            await _syncFCMToken();
+            _syncFCMToken();
             // print("Returning Login Success (fresh): Navigating to Dashboard");
             Get.offNamed('/dashboard');
           } else {
@@ -294,7 +296,7 @@ class LoginController with ChangeNotifier {
                   key: StorageStringsConstants.userDataKey,
                   value: jsonEncode(_user!.toMap()));
 
-              await _syncFCMToken();
+              _syncFCMToken();
               // print("Returning Login Success (cached): Navigating to Dashboard");
               Get.offNamed('/dashboard');
             } else {
@@ -588,7 +590,7 @@ class LoginController with ChangeNotifier {
             value: jsonEncode(freshUser.toMap()));
 
         // 🚀 Run the Smart Topic Healer with the new data!
-        await _syncFCMToken();
+        _syncFCMToken();
         notifyListeners(); // Updates the UI Dashboard Dropdown!
       }
 
@@ -694,7 +696,7 @@ class LoginController with ChangeNotifier {
         cookie: "", // Cookies might be stale, but Token is what matters now
       );
 
-      await _syncFCMToken();
+      _syncFCMToken();
       // print("✅ Auto-Login Successful for ${username}");
       return true;
     } catch (e, stackTrace) {
@@ -718,7 +720,23 @@ class LoginController with ChangeNotifier {
       }
 
       // 4. Clear Secure Storage
+      // ✅ FIX: deleteAll() used to wipe _deviceInstallIdKey along with
+      // everything else, even though that key identifies the physical
+      // device/install, not the user session. Losing it here meant every
+      // Reset Data regenerated a fresh device id on the same phone, so the
+      // next login inserted a new user_fcm_tokens row instead of updating
+      // the existing one - an orphaned row left behind every time a user
+      // reset data (observed: 3 rows for one userId, same FCM token, 3
+      // different device ids, after one physical phone did a normal login
+      // then a Reset Data). Preserve just this one key across the wipe;
+      // everything else (auth/session data) still gets cleared as intended.
+      final preservedDeviceId =
+          await SecureStorageService.instance.read(key: _deviceInstallIdKey);
       await SecureStorageService.instance.deleteAll();
+      if (preservedDeviceId != null && preservedDeviceId.isNotEmpty) {
+        await SecureStorageService.instance
+            .write(key: _deviceInstallIdKey, value: preservedDeviceId);
+      }
 
       // ✅ 1. Burn the Firebase Token so notifications stop arriving for the old user!
       try {
@@ -747,6 +765,21 @@ class LoginController with ChangeNotifier {
   }
 
   // --- FCM TOKEN & SMART TOPIC HELPER ---
+  // ✅ FIX: every call site below fires this without awaiting it. It used
+  // to be awaited before navigating to the dashboard, which worked fine on
+  // the emulator and for accounts with a quick sync, but a wide-scope
+  // coordinator account (52 classes, ~5min total sync) failed to register
+  // any device token on two different real phones even though login
+  // completed normally - getDeviceToken()'s 10s timeout (added to stop
+  // login hanging forever on an unreachable Play Services) was apparently
+  // being hit by a real device needing longer to re-establish its FCM
+  // connection after that long a sync, while the always-awake emulator
+  // (direct host network, no battery/doze interference) didn't hit the
+  // same delay. Nothing downstream of any call site depends on this
+  // having finished, so there's no reason to block login on it - this
+  // function's own try/catch already handles any failure gracefully, and
+  // letting it run in the background removes the need for login to ever
+  // wait on a slow/flaky FCM connection at all.
   Future<void> _syncFCMToken() async {
     try {
       if (_user != null && _dataRepository != null) {
@@ -796,15 +829,17 @@ class LoginController with ChangeNotifier {
         // D. Execute only the changes
         // ✅ FIX: subscribeToTopic()/unsubscribeFromTopic() can hang
         // indefinitely (rather than throw) when Google Play Services is
-        // unreachable, which would otherwise block login on its loading
-        // spinner forever (this function runs before navigating to the
-        // dashboard) even though the actual data sync already succeeded.
-        // Each topic gets its own timeout + catch so one unreachable topic
-        // can't also block every other topic in the same loop. The actually-
-        // persisted topic set is built up from only the operations that
-        // really succeeded, not optimistically from newTopics - otherwise a
-        // topic that failed/timed out here would still get cached as
-        // "subscribed", and the diff above would never retry it later.
+        // unreachable. This no longer needs to be as tight as it once was -
+        // _syncFCMToken() runs fire-and-forget now (see its own comment),
+        // so there's no login spinner left to block, and a wide-scope
+        // account can genuinely need longer than a few seconds per topic on
+        // a real device. Each topic still gets its own timeout + catch so
+        // one unreachable topic can't also block every other topic in the
+        // same loop. The actually-persisted topic set is built up from only
+        // the operations that really succeeded, not optimistically from
+        // newTopics - otherwise a topic that failed/timed out here would
+        // still get cached as "subscribed", and the diff above would never
+        // retry it later.
         Set<String> actualTopics = Set.from(oldTopics);
         bool anyChangeSucceeded = false;
 
@@ -812,7 +847,7 @@ class LoginController with ChangeNotifier {
           try {
             await FirebaseMessaging.instance
                 .unsubscribeFromTopic(topic)
-                .timeout(const Duration(seconds: 10));
+                .timeout(const Duration(seconds: 30));
             actualTopics.remove(topic);
             anyChangeSucceeded = true;
             // print("🔕 Auto-Heal: Unsubscribed from stale topic -> $topic");
@@ -825,7 +860,7 @@ class LoginController with ChangeNotifier {
           try {
             await FirebaseMessaging.instance
                 .subscribeToTopic(topic)
-                .timeout(const Duration(seconds: 10));
+                .timeout(const Duration(seconds: 30));
             actualTopics.add(topic);
             anyChangeSucceeded = true;
             // print("🔔 Auto-Heal: Subscribed to fresh topic -> $topic");
@@ -853,8 +888,10 @@ class LoginController with ChangeNotifier {
   // user_fcm_tokens accumulated a new row per OS update/reinstall instead of
   // updating one. Generate a UUID once and persist it instead, for both
   // platforms, so the same install is recognized as the same device.
+  static const String _deviceInstallIdKey = 'device_install_id';
+
   Future<String> _getOrCreatePersistentDeviceId() async {
-    const storageKey = 'device_install_id';
+    const storageKey = _deviceInstallIdKey;
     try {
       String? existing =
           await SecureStorageService.instance.read(key: storageKey);

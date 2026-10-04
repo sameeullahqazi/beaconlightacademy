@@ -627,21 +627,25 @@ class PushNotificationService {
       // ✅ FIX: these native Firebase Messaging calls can hang indefinitely
       // (rather than throw) when Google Play Services is unreachable
       // (observed: "SERVICE_NOT_AVAILABLE" logged natively, but nothing ever
-      // threw on the Dart side) - without a timeout, login gets stuck on its
-      // loading spinner forever even after the actual data sync already
-      // succeeded, since _syncFCMToken() runs this before navigating to the
-      // dashboard.
+      // threw on the Dart side). This used to need a tight timeout because
+      // _syncFCMToken() was awaited before login could navigate to the
+      // dashboard - now that every call site fires it without awaiting
+      // (see the comment on _syncFCMToken() itself), there's no UI left to
+      // block, so this can afford to wait longer for a real device's FCM
+      // connection to re-establish (observed: a wide-scope account with a
+      // long preceding sync failed to register a token within 10s on real
+      // hardware, while the always-connected emulator succeeded).
       NotificationSettings settings = await _fcm
           .requestPermission(
             alert: true,
             badge: true,
             sound: true,
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 30));
 
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
         String? token =
-            await _fcm.getToken().timeout(const Duration(seconds: 10));
+            await _fcm.getToken().timeout(const Duration(seconds: 30));
         // print("🔥 FCM Device Token: $token");
         return token;
       }
