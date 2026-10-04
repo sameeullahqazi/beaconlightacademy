@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:bla_flutter_app/constants/api_strings.dart';
 import 'package:bla_flutter_app/constants/table_names_strings.dart';
@@ -1505,8 +1506,10 @@ class DataRepository {
           "userId": userId,
           "deviceToken": fcmToken,
           "deviceId": deviceId, // ✅ Pass it to PHP
-          "platform":
-              "android", // Or dynamically set this if deploying to iOS later
+          // ✅ FIX: was hardcoded to "android" - harmless while iOS wasn't
+          // in use, but would have mislabeled every iPhone registration in
+          // user_fcm_tokens once it was.
+          "platform": Platform.isIOS ? "ios" : "android",
         }),
         accessToken: authService.accessToken,
       );
