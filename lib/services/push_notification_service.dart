@@ -594,7 +594,11 @@ class PushNotificationService {
             'senderId': sId,
             'senderName': senderName,
             'message': data['message'],
-            'createdDate': DateTime.now().toString(),
+            // ✅ FIX: was DateTime.now() (device-local clock) - use the
+            // server's own raw created value, same as every other push
+            // handler in this file, so the displayed comment time matches
+            // what's actually stored server-side.
+            'createdDate': data['createdDate'].toString(),
           });
 
           await repo.rawUpdate(
