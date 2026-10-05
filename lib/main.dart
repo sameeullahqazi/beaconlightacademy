@@ -92,6 +92,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       if (pendingSync) {
         // print("App resumed: Dirty flag is TRUE. Executing targeted sync...");
 
+        // ✅ FIX: only clear the flag below if processing actually ran. This
+        // used to reset it unconditionally even when the Get.context/user/
+        // repo check failed and processPendingBackgroundPayloads() was
+        // therefore skipped entirely - silently and permanently dropping
+        // the queued payload, since nothing else would re-check it later.
+        // A single failed check here should be rare (the app was already
+        // running before backgrounding, unlike a fresh cold start), but if
+        // it does happen the flag now stays true so the next resume or
+        // login retries it, matching _checkColdStartDirtyFlag()'s pattern.
+        bool processed = false;
+
         try {
           if (Get.context != null) {
             final loginCtrl =
@@ -101,6 +112,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               // ✅ PROCESS THE OFFLINE PAYLOADS FIRST!
               await PushNotificationService.instance
                   .processPendingBackgroundPayloads();
+              processed = true;
 
               // ✅ DEFER THE HEAVY SYNC so the UI can render instantly without locking
               Future.delayed(const Duration(seconds: 3), () {
@@ -112,8 +124,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           print("Lifecycle Sync Error: $e");
         }
 
-        // ✅ 3. Reset the flag so it doesn't sync again next time!
-        await prefs.setBool('pending_background_sync', false);
+        // ✅ 3. Reset the flag only once we've actually drained the queue.
+        if (processed) {
+          await prefs.setBool('pending_background_sync', false);
+        }
       } else {
         // print("App resumed: Dirty flag is FALSE. Skipping sync.");
       }

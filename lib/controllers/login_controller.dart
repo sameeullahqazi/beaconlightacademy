@@ -223,6 +223,10 @@ class LoginController with ChangeNotifier {
               // ✅ FIX: fire-and-forget, not awaited - see the other
               // _syncFCMToken() call sites in this file for why.
               _syncFCMToken();
+              // ✅ FIX: see the comment on the tryAutoLogin() call site for
+              // why this is called deterministically here too.
+              await PushNotificationService.instance
+                  .processPendingBackgroundPayloads();
               // print("First Login Success: Navigating to Dashboard");
               Get.offNamed('/dashboard');
             } else {
@@ -285,6 +289,10 @@ class LoginController with ChangeNotifier {
                 value: jsonEncode(_user!.toMap()));
 
             _syncFCMToken();
+            // ✅ FIX: see the comment on the tryAutoLogin() call site for
+            // why this is called deterministically here too.
+            await PushNotificationService.instance
+                .processPendingBackgroundPayloads();
             // print("Returning Login Success (fresh): Navigating to Dashboard");
             Get.offNamed('/dashboard');
           } else {
@@ -297,6 +305,10 @@ class LoginController with ChangeNotifier {
                   value: jsonEncode(_user!.toMap()));
 
               _syncFCMToken();
+              // ✅ FIX: see the comment on the tryAutoLogin() call site for
+              // why this is called deterministically here too.
+              await PushNotificationService.instance
+                  .processPendingBackgroundPayloads();
               // print("Returning Login Success (cached): Navigating to Dashboard");
               Get.offNamed('/dashboard');
             } else {
@@ -594,6 +606,12 @@ class LoginController with ChangeNotifier {
         notifyListeners(); // Updates the UI Dashboard Dropdown!
       }
 
+      // ✅ FIX: catch any payload still sitting in the queue before the
+      // regular incremental sync below runs, as a safety net alongside the
+      // login-time call (see tryAutoLogin()'s comment) - harmless if
+      // there's nothing queued.
+      await PushNotificationService.instance.processPendingBackgroundPayloads();
+
       // Proceed with the standard data sync
       await DataSyncService.instance.startSyncScheduler(
         _dataRepository!,
@@ -697,6 +715,17 @@ class LoginController with ChangeNotifier {
       );
 
       _syncFCMToken();
+
+      // ✅ FIX: deterministically drain any payloads a push queued while the
+      // app was fully closed, instead of relying solely on main.dart's
+      // _checkColdStartDirtyFlag() polling loop (up to 10s, once a second).
+      // That poll has no fallback within the same session if auto-login/DB
+      // init takes longer than its window - the flag stays set for "next
+      // time," but "next time" means the next full close+reopen, not
+      // anything later in this session. This runs from SplashScreen (which
+      // calls tryAutoLogin() on every cold start), right after login/DB
+      // state is confirmed ready, so there's no timing window to lose.
+      await PushNotificationService.instance.processPendingBackgroundPayloads();
       // print("✅ Auto-Login Successful for ${username}");
       return true;
     } catch (e, stackTrace) {
