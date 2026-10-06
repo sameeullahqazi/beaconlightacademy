@@ -37,6 +37,13 @@ class LoginController with ChangeNotifier {
   bool _isSyncCooldown = false;
   bool get isSyncCooldown => _isSyncCooldown; // Getter for UI
 
+  // ✅ Set by tryAutoLogin() specifically when secure storage had a cached
+  // user profile but was then missing the password for it - a genuine
+  // "something went wrong" case, unlike a plain "nothing stored" first
+  // launch, which is expected and shouldn't alarm anyone. LoginScreen reads
+  // and clears this once on initState() so it only ever shows once.
+  String? pendingAutoLoginFailureMessage;
+
   AuthService get authService => _authService;
 
   // LoginController Constructor
@@ -662,6 +669,14 @@ class LoginController with ChangeNotifier {
           await SecureStorageService.instance.read(key: _user!.username!);
       if (storedPwd == null) {
         print("Auto-Login: No password found for ${_user!.username}.");
+        // ✅ FIX: this used to fail completely silently - the login screen
+        // would just appear with no explanation, which a teacher reported
+        // as the app "logging her out automatically." We had a cached
+        // profile for this user (unlike the plain "nothing stored" case
+        // above), so losing just the password here means secure storage
+        // genuinely lost data it had before, not a normal first launch.
+        pendingAutoLoginFailureMessage =
+            "You were logged out because your saved login could not be found. Please log in again.";
         return false;
       }
 

@@ -23,6 +23,25 @@ class _LoginScreenState extends State<LoginScreen> {
   final Color goldAccent = const Color(0xFFFFC107);
 
   @override
+  void initState() {
+    super.initState();
+    // ✅ Surface a reason for landing here when tryAutoLogin() silently
+    // failed due to secure storage losing a previously-cached password -
+    // see the comment on pendingAutoLoginFailureMessage itself. Read it
+    // once and clear it immediately so it never shows again on a later,
+    // ordinary logout.
+    final loginController =
+        Provider.of<LoginController>(context, listen: false);
+    final pendingMessage = loginController.pendingAutoLoginFailureMessage;
+    if (pendingMessage != null) {
+      loginController.pendingAutoLoginFailureMessage = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _errorMessage = pendingMessage);
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
