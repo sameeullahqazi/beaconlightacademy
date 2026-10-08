@@ -861,14 +861,18 @@ class LoginController with ChangeNotifier {
         // ==========================================
         // ✅ NEW: DYNAMIC FEE DEFAULTER ROUTING
         // ==========================================
-        if (_user!.role == 'parent' && _user!.isFeeDefaulter == 1) {
-          newTopics.add('fee_defaulters');
-        }
+        // fee_defaulters is deliberately kept OUT of newTopics/oldTopics
+        // diffing below - see the dedicated block further down for why.
+        bool shouldBeFeeDefaulter =
+            _user!.role == 'parent' && _user!.isFeeDefaulter == 1;
         // ==========================================
 
-        // C. Calculate the exact differences!
-        Set<String> topicsToRemove = oldTopics.difference(newTopics);
-        Set<String> topicsToAdd = newTopics.difference(oldTopics);
+        // C. Calculate the exact differences! (fee_defaulters excluded -
+        // handled unconditionally below instead of diffed)
+        Set<String> topicsToRemove = oldTopics.difference(newTopics)
+          ..remove('fee_defaulters');
+        Set<String> topicsToAdd = newTopics.difference(oldTopics)
+          ..remove('fee_defaulters');
 
         // D. Execute only the changes
         // ✅ FIX: subscribeToTopic()/unsubscribeFromTopic() can hang
@@ -911,6 +915,36 @@ class LoginController with ChangeNotifier {
           } catch (e) {
             print("Error subscribing to topic $topic: $e");
           }
+        }
+
+        // ✅ FIX (2026-10-08): fee_defaulters can be changed server-side
+        // without this device ever being told - Challan::receiveSingleChallan()/
+        // revertSingleChallan() subscribe/unsubscribe a parent's tokens
+        // directly against FCM the instant a payment is received/reverted.
+        // Diffing against the local subscribed_topics cache like every other
+        // topic above means that once the server removes someone, this cache
+        // permanently (and incorrectly) believes they're still subscribed -
+        // so if they become a defaulter again later, the diff sees no change
+        // needed and never re-subscribes them. subscribeToTopic()/
+        // unsubscribeFromTopic() are idempotent, so call the correct one
+        // unconditionally instead of diffing: a no-op in the common case
+        // (already correct), but self-heals whenever the server and this
+        // device's cache have drifted.
+        try {
+          if (shouldBeFeeDefaulter) {
+            await FirebaseMessaging.instance
+                .subscribeToTopic('fee_defaulters')
+                .timeout(const Duration(seconds: 30));
+            actualTopics.add('fee_defaulters');
+          } else {
+            await FirebaseMessaging.instance
+                .unsubscribeFromTopic('fee_defaulters')
+                .timeout(const Duration(seconds: 30));
+            actualTopics.remove('fee_defaulters');
+          }
+          anyChangeSucceeded = true;
+        } catch (e) {
+          print("Error syncing fee_defaulters topic: $e");
         }
 
         // E. Save the new state if anything changed
