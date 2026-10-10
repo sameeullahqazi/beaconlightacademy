@@ -5,15 +5,49 @@ import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/screens/correspondence_details.dart';
 import 'package:bla_flutter_app/screens/diary_details.dart';
+import 'package:bla_flutter_app/services/data_sync_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_app_badger/flutter_app_badger.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:synchronized/synchronized.dart';
 import 'package:bla_flutter_app/utils/helpers.dart';
 import 'dart:convert';
+
+// ✅ NEW (2026-10-10): a real OS-level notification, replacing the
+// GetX in-app toast removed earlier the same day (see the comment on
+// the old call site further down for why - Get.snackbar() could freeze
+// the whole app). HIGH importance explicitly, instead of leaving this
+// to Firebase's own fallback channel (which defaults to DEFAULT
+// importance and gets silently filed under Android's "Silent" category
+// - confirmed via dumpsys during the same QA pass that this, not a
+// delivery failure, was why background/terminated notifications looked
+// "missing" all along). Firebase's own auto-display (background/
+// terminated) is pointed at this same channel via the
+// default_notification_channel_id meta-data in AndroidManifest.xml, so
+// both paths get the same prominence - this .show() call here only
+// covers foreground, which Firebase never auto-displays for by design.
+const String _highPriorityChannelId = 'bla_connect_high_importance';
+const AndroidNotificationChannel _highPriorityChannel = AndroidNotificationChannel(
+  _highPriorityChannelId,
+  'Important Updates',
+  description: 'Diary, correspondence, and fee notices',
+  importance: Importance.max,
+);
+final FlutterLocalNotificationsPlugin _localNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
+// Stable per-message notification ID so multiple notifications stack in
+// the tray instead of overwriting each other (flutter_local_notifications
+// requires an int id). Falls back to the current time if neither id field
+// is present/parseable, rather than letting everything collide on id 0.
+int _notificationIdFor(Map<String, dynamic> data) {
+  final raw = data['diaryId'] ?? data['correspondenceId'];
+  final parsed = int.tryParse(raw?.toString() ?? '');
+  return parsed ?? DateTime.now().millisecondsSinceEpoch.remainder(100000);
+}
 
 // Serializes read-modify-write access to the pending_payloads /
 // app_icon_badge_count SharedPreferences keys. Background messages can
@@ -78,6 +112,28 @@ class PushNotificationService {
 
   // --- INITIALIZE LISTENERS ---
   Future<void> initialize() async {
+    // ✅ NEW (2026-10-10): create the high-importance channel and
+    // initialize the local notifications plugin before anything can try
+    // to use it. Reuses the app's existing launcher icon as the small
+    // icon - not a proper white/transparent silhouette (Android's
+    // recommended format), but functional; a dedicated notification icon
+    // asset is a separate, optional cosmetic follow-up, not a blocker.
+    await _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(_highPriorityChannel);
+    await _localNotificationsPlugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+      onDidReceiveNotificationResponse: (details) {
+        final payload = details.payload;
+        if (payload != null && payload.isNotEmpty) {
+          _handleNotificationTap(jsonDecode(payload));
+        }
+      },
+    );
+
     // Register the background handler
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
@@ -106,24 +162,39 @@ class PushNotificationService {
         await _saveDiaryCommentLocally(message.data); // ✅ Catch the comment!
       }
 
-      // ✅ REMOVED (2026-10-10): the foreground in-app snackbar toast for
-      // incoming pushes. Tried guarding it first with Get.overlayContext !=
-      // null, then a try/catch around Get.snackbar() itself (matching the
-      // 2026-10-08 fix for the same bug class in login_controller.dart's
-      // setSyncingStateListener) - neither actually works, because
-      // Get.snackbar() only *queues* the job (GetQueue.add()); the actual
-      // Overlay.of() call that can throw happens later when GetX's queue
-      // processes it, outside the synchronous scope of any try/catch here.
-      // Confirmed this freezes the app for real (ANR, SIGQUIT) when a
-      // message happens to land during a foreground/background transition -
-      // reproduced live during QA via a general-notice push. The diary/
-      // notice content is already saved and shown through the normal
-      // reactive UI update above regardless of this toast; background/
-      // terminated states already get a real OS notification through a
-      // separate, non-GetX mechanism. Not worth the freeze risk for a
-      // cosmetic toast - if a foreground toast is wanted again later, do it
-      // through flutter_local_notifications (a real system notification)
-      // instead, which doesn't depend on a mounted Overlay at all.
+      // ✅ NEW (2026-10-10): show a real OS notification instead of the
+      // GetX in-app snackbar toast removed earlier today - that call
+      // (Get.snackbar()) could freeze the whole app (ANR, SIGQUIT),
+      // confirmed live during QA via a general-notice push landing during
+      // a foreground/background transition. Get.snackbar() only *queues*
+      // the job via GetX's GetQueue; the actual Overlay.of() call that can
+      // throw happens later when the queue processes it, outside the
+      // synchronous scope of any try/catch, so neither an
+      // overlayContext-null guard nor a try/catch around the call itself
+      // actually protected against it. This .show() call doesn't depend
+      // on a mounted Overlay at all - Firebase never auto-displays a
+      // notification while the app is in true foreground (by SDK design),
+      // so without this, foreground was the one app state with no visible
+      // signal at all.
+      try {
+        await _localNotificationsPlugin.show(
+          _notificationIdFor(message.data),
+          message.notification?.title ?? "New Notification",
+          message.notification?.body ?? "",
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              _highPriorityChannelId,
+              'Important Updates',
+              channelDescription: 'Diary, correspondence, and fee notices',
+              importance: Importance.max,
+              priority: Priority.high,
+            ),
+          ),
+          payload: jsonEncode(message.data),
+        );
+      } catch (e) {
+        print("Error showing foreground notification: $e");
+      }
     });
 
     // 2. BACKGROUND TAP LISTENER (App is minimized)
@@ -219,6 +290,13 @@ class PushNotificationService {
                   .refreshCounts();
             } catch (_) {}
 
+            // ✅ NEW (2026-10-10): tell the Diary list to reload so it
+            // picks up the markAsRead above - unlike the in-list tap's
+            // Navigator.push(...).then((_) => _loadData()), Get.to() here
+            // has no refresh-on-return of its own. See
+            // DataSyncService.notifyExternalDataChange()'s comment for why.
+            DataSyncService.instance.notifyExternalDataChange();
+
             // ✅ 4. ADD THIS: Navigate to the Details Screen!
             Get.to(() => DiaryDetailsScreen(item: diary));
             return;
@@ -263,6 +341,10 @@ class PushNotificationService {
             Provider.of<DashboardController>(Get.context!, listen: false)
                 .refreshCounts();
           } catch (_) {}
+
+          // ✅ NEW (2026-10-10): same reasoning as the diary_new branch
+          // above - Get.to() has no refresh-on-return of its own.
+          DataSyncService.instance.notifyExternalDataChange();
 
           // ✅ NAVIGATE TO CONVERSATION
           // Note: Check your ConversationView constructor. It usually takes a model.

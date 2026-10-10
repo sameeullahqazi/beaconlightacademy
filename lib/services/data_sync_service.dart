@@ -73,6 +73,22 @@ class DataSyncService {
     _stateController.add(newState);
   }
 
+  // ✅ NEW (2026-10-10): lets a caller outside this service signal "a
+  // screen listening on stateStream should reload" without pretending a
+  // real sync happened. Added specifically because
+  // push_notification_service.dart's _handleNotificationTap() navigates
+  // via GetX's Get.to() (global navigator), which - unlike the in-list
+  // tap's local Navigator.push(...).then((_) { if (!isRead) _loadData() })
+  // - has no refresh-on-return of its own. Reuses SyncState.synced since
+  // that's the one DiaryListTab (and potentially other screens) already
+  // correctly responds to by reloading - this is the narrow fix; the
+  // underlying issue (listenTableChanges() not being a real reactive
+  // stream - it only ever fires once, on initial subscribe) is still
+  // outstanding, deliberately deferred as a separate, broader task.
+  void notifyExternalDataChange() {
+    _setState(SyncState.synced);
+  }
+
   Future<void> syncData(
     DataRepository dataRepository,
     SQLiteDB sqLiteDB,

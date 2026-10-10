@@ -45,6 +45,18 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- ✅ NEW (2026-10-10): points Firebase's own auto-display (which
+             only fires for background/terminated apps, never foreground)
+             at the same high-importance channel the app explicitly creates
+             in push_notification_service.dart - without this, Firebase
+             falls back to its own default channel at DEFAULT importance,
+             which gets silently filed under Android's "Silent" notification
+             category (confirmed via dumpsys during the 2026-10-10 QA pass -
+             this is why background/terminated notifications looked
+             "missing" even though they were actually being delivered). -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="bla_connect_high_importance" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
