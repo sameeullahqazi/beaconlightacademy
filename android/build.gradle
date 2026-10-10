@@ -1,6 +1,6 @@
 buildscript {
     // 1. Give the Flutter CLI EXACTLY the string it is searching for
-    ext.kotlin_version = '1.9.24'
+    ext.kotlin_version = '2.4.0'
     repositories {
         google()
         mavenCentral()
@@ -24,16 +24,16 @@ subprojects {
     afterEvaluate { project ->
         if (project.hasProperty('android')) {
             project.android {
-                compileSdkVersion 34
+                compileSdkVersion 36
             }
         }
     }
-    
+
     // Force the modern core-ktx library to permanently cure the 'lStar' error
     project.configurations.all {
         resolutionStrategy.eachDependency { details ->
             if (details.requested.group == 'org.jetbrains.kotlin') {
-                details.useVersion "1.9.24"
+                details.useVersion "2.4.0"
             }
             if (details.requested.group == 'androidx.core' && details.requested.name == 'core-ktx') {
                 details.useVersion "1.12.0"

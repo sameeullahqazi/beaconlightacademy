@@ -205,6 +205,13 @@ class LoginController with ChangeNotifier {
           var dbSuccess = await _sqLiteDB!.open(shouldCreateSchema: true);
 
           if (dbSuccess) {
+            // ✅ Tell the app (and DashboardController) the DB is ready -
+            // moved here (2026-10-08) from createDB(), which fired this
+            // right after constructing the SQLiteDB object but before
+            // open() above had actually run, so DashboardController's
+            // eager refreshCounts() raced the real database open.
+            notifyListeners();
+
             await SecureStorageService.instance
                 .write(key: username, value: password);
 
@@ -370,9 +377,6 @@ class LoginController with ChangeNotifier {
     // Fix: Use bang operator (!) because we just assigned it
     _dataRepository!.downloadingStatusStreamController ??=
         StreamController<String>()..add("Initializing..");
-
-    // ✅ ADD THIS LINE: Tell the app (and DashboardController) the DB is ready!
-    notifyListeners();
   }
 
   setSyncingStateListener() {
@@ -385,28 +389,17 @@ class LoginController with ChangeNotifier {
           return;
         }
 
-        Get.snackbar("", "",
-            snackPosition: SnackPosition.BOTTOM,
-            duration: Duration(seconds: 2),
-            snackStyle: SnackStyle.GROUNDED,
-            backgroundColor: Colors.transparent,
-            margin: EdgeInsets.only(
-                right: 16, left: MediaQuery.of(Get.context!).size.width - 72),
-            icon: Container(
-              width: 32,
-              height: 32,
-              child: Center(
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor:
-                        AlwaysStoppedAnimation<Color>(Color(0xFFEFC111)),
-                  ),
-                ),
-              ),
-            ));
+        // ✅ REMOVED (2026-10-10): the try/catch fix from 2026-10-08 (around
+        // the same "No Overlay widget found" issue this listener can hit
+        // before navigation to /dashboard completes) turned out to be
+        // insufficient, same as the equivalent fix in
+        // push_notification_service.dart - Get.snackbar() only *queues*
+        // the job, the actual Overlay-dependent work happens later inside
+        // GetX's own queue processing, outside this try/catch's scope.
+        // Confirmed via a real freeze today (2026-10-10) on the same bug
+        // class elsewhere. Removing this cosmetic "syncing..." toast
+        // entirely rather than relying on timing luck - sync still runs
+        // and completes normally without it.
       }
       lastSyncState = syncState;
     });

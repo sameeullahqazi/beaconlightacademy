@@ -106,25 +106,24 @@ class PushNotificationService {
         await _saveDiaryCommentLocally(message.data); // ✅ Catch the comment!
       }
 
-      if (message.notification != null) {
-        // ✅ Only attempt to draw the snackbar if the UI is fully booted
-        if (Get.overlayContext != null) {
-          Get.snackbar(
-            message.notification?.title ?? "New Notification",
-            message.notification?.body ?? "",
-            snackPosition: SnackPosition.TOP,
-            backgroundColor: Colors.white,
-            colorText: Colors.black,
-            icon: const Icon(Icons.notifications_active,
-                color: Color(0xFF4CAF50)),
-            duration: const Duration(seconds: 5),
-            boxShadows: const [BoxShadow(color: Colors.black12, blurRadius: 8)],
-            onTap: (snack) {
-              _handleNotificationTap(message.data);
-            },
-          );
-        }
-      }
+      // ✅ REMOVED (2026-10-10): the foreground in-app snackbar toast for
+      // incoming pushes. Tried guarding it first with Get.overlayContext !=
+      // null, then a try/catch around Get.snackbar() itself (matching the
+      // 2026-10-08 fix for the same bug class in login_controller.dart's
+      // setSyncingStateListener) - neither actually works, because
+      // Get.snackbar() only *queues* the job (GetQueue.add()); the actual
+      // Overlay.of() call that can throw happens later when GetX's queue
+      // processes it, outside the synchronous scope of any try/catch here.
+      // Confirmed this freezes the app for real (ANR, SIGQUIT) when a
+      // message happens to land during a foreground/background transition -
+      // reproduced live during QA via a general-notice push. The diary/
+      // notice content is already saved and shown through the normal
+      // reactive UI update above regardless of this toast; background/
+      // terminated states already get a real OS notification through a
+      // separate, non-GetX mechanism. Not worth the freeze risk for a
+      // cosmetic toast - if a foreground toast is wanted again later, do it
+      // through flutter_local_notifications (a real system notification)
+      // instead, which doesn't depend on a mounted Overlay at all.
     });
 
     // 2. BACKGROUND TAP LISTENER (App is minimized)

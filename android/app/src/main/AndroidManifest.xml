@@ -9,8 +9,15 @@
         android:roundIcon="@mipmap/launcher_icon" 
         android:allowBackup="false"          
         android:enableOnBackInvokedCallback="true"
-        android:fullBackupContent="false"  
-        android:extractNativeLibs="true"  >
+        android:fullBackupContent="false"  >
+        <!-- ✅ REMOVED android:extractNativeLibs="true" (2026-10-08, API 36 upgrade):
+             AGP now rejects this attribute set explicitly in the manifest - it wants
+             android.packagingOptions.jniLibs.useLegacyPackaging in the build script
+             instead, if the legacy/uncompressed behavior is still needed at all. Not
+             re-added here: the 16KB native-library page-size alignment problem this
+             originally worked around (see CLAUDE.md's "16 KB Page Size Issue" note) is
+             handled automatically by the much newer NDK bundled with current Flutter. -->
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
