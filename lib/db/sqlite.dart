@@ -350,6 +350,16 @@ class SQLiteDB extends BaseDB {
     update(tableName, model.toMap(), where, whereArgs);
   }
 
+  // NOT a genuine reactive stream, despite the name: database.rawQuery(...)
+  // returns a Future, and .asStream() just wraps that single result into a
+  // one-element stream that completes immediately after - it fires once at
+  // subscription time and never again on later writes. Building a real
+  // version would mean a per-table StreamController that every write
+  // (insert/update/delete/batch sync inserts) notifies, re-running the
+  // query and emitting fresh results on each change - not done, since no
+  // current consumer actually needs it (see data_repository.dart's wrapper
+  // for why). Found/left as-is 2026-10-10, formally retired as dead code
+  // 2026-10-12.
   Stream<List<Map<String, dynamic>>> listenTableChanges(String rawQueryStr) {
     return database
         .rawQuery(rawQueryStr)

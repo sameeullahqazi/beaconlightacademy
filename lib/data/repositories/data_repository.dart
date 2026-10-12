@@ -733,6 +733,13 @@ class DataRepository {
     return result;
   }
 
+  // NOT a real reactive stream - see sqlite.dart's listenTableChanges() for
+  // why. No longer called anywhere in the app as of 2026-10-12: diary.dart
+  // and correspondence.dart's three former subscriptions to this were
+  // removed as dead code (DataSyncService.stateStream and DashboardController
+  // already provide genuine reactivity for all of their consumers). Kept
+  // here, unused, in case a real per-table reactive stream is worth
+  // building later - don't wire new consumers to it as-is.
   Stream<List<Map<String, dynamic>>> listenTableChanges(String tableName) {
     return _sqLiteDB.listenTableChanges("select * from $tableName");
   }

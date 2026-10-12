@@ -82,9 +82,11 @@ class DataSyncService {
   // - has no refresh-on-return of its own. Reuses SyncState.synced since
   // that's the one DiaryListTab (and potentially other screens) already
   // correctly responds to by reloading - this is the narrow fix; the
-  // underlying issue (listenTableChanges() not being a real reactive
-  // stream - it only ever fires once, on initial subscribe) is still
-  // outstanding, deliberately deferred as a separate, broader task.
+  // separate underlying issue (listenTableChanges() never being a real
+  // reactive stream) was resolved 2026-10-12 by removing its three unused
+  // subscriptions as dead code, since this stateStream mechanism already
+  // covered every consumer that mattered - see data_repository.dart's
+  // listenTableChanges() wrapper for the full story.
   void notifyExternalDataChange() {
     _setState(SyncState.synced);
   }

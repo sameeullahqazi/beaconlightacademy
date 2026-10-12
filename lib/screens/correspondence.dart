@@ -1,4 +1,3 @@
-import 'package:bla_flutter_app/constants/table_names_strings.dart';
 import 'package:bla_flutter_app/controllers/dashboard_controller.dart';
 import 'package:bla_flutter_app/controllers/login_controller.dart';
 import 'package:bla_flutter_app/models/correspondence_model.dart';
@@ -137,7 +136,6 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
   final int _firstLimit = 25;
   final int _nextLimit = 25;
   StreamSubscription? _syncSubscription;
-  StreamSubscription? _dbSubscription;
   bool _isFirstBuild = true;
 
   DashboardController? _dashCtrl; // ✅ 1. Add this controller reference
@@ -162,20 +160,6 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
         }
       }
     });
-
-    final repo = Provider.of<LoginController>(context, listen: false)
-        .getDataRepository();
-    if (repo != null) {
-      _dbSubscription =
-          repo.listenTableChanges(TableNames.correspondences).listen((_) {
-        if (mounted) {
-          // ✅ SQLite table changed? Refresh the list silently!
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) _loadData(init: true, silent: true);
-          });
-        }
-      });
-    }
 
     // ✅ 2. THE BULLETPROOF LISTENER
     _dashCtrl = Provider.of<DashboardController>(context, listen: false);
@@ -210,7 +194,6 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     _dashCtrl
         ?.removeListener(_onDashboardUpdated); // ✅ 5. Prevent memory leaks!
     _syncSubscription?.cancel();
-    _dbSubscription?.cancel();
     _scrollController.dispose();
     super.dispose();
   }

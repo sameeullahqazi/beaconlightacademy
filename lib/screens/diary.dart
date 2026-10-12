@@ -12,7 +12,6 @@ import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
-import 'package:bla_flutter_app/constants/table_names_strings.dart';
 
 const Color navyBlue = Color(0xFF041434);
 const Color goldAccent = Color(0xFFFFC107);
@@ -38,7 +37,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   int _lastTotalUnread = -1;
   int _refreshTrigger = 0;
-  StreamSubscription? _dbSubscription;
 
   bool _isSearching = false;
   String _searchQuery = '';
@@ -53,22 +51,10 @@ class _DiaryScreenState extends State<DiaryScreen> {
     _lastTotalUnread = dashCtrl.totalUnread;
 
     _loadClasses();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final loginCtrl = Provider.of<LoginController>(context, listen: false);
-      final repo = loginCtrl.getDataRepository();
-      if (repo != null) {
-        _dbSubscription =
-            repo.listenTableChanges(TableNames.diaries).listen((_) {
-          if (mounted) _updateBadgeCounts();
-        });
-      }
-    });
   }
 
   @override
   void dispose() {
-    _dbSubscription?.cancel();
     _searchController.dispose();
     _searchDebounce?.cancel();
     super.dispose();
@@ -381,7 +367,6 @@ class _DiaryListTabState extends State<DiaryListTab> {
   final int _firstLimit = 25;
   final int _nextLimit = 10;
   StreamSubscription? _syncSubscription;
-  StreamSubscription? _dbSubscription;
 
   // _loadData() and _silentReload() both read/write the same _items/_offset
   // state, with nothing to stop them racing - e.g. initState() firing
@@ -411,21 +396,11 @@ class _DiaryListTabState extends State<DiaryListTab> {
         _loadData(init: true);
       }
     });
-
-    _dbSubscription =
-        widget.repo.listenTableChanges(TableNames.diaries).listen((_) {
-      if (mounted) {
-        Future.delayed(const Duration(milliseconds: 300), () async {
-          if (mounted) await _loadData(init: true);
-        });
-      }
-    });
   }
 
   @override
   void dispose() {
     _syncSubscription?.cancel();
-    _dbSubscription?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
