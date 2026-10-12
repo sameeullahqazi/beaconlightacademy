@@ -343,6 +343,14 @@ class _NewCorrespondenceScreenState extends State<NewCorrespondenceScreen> {
       keyboardType: isMultiline ? TextInputType.multiline : TextInputType.text,
       textInputAction:
           isMultiline ? TextInputAction.newline : TextInputAction.done,
+      // ✅ FIX: without this, Android's autofill/keyboard can offer the
+      // device owner's own saved username (e.g. their phone number) as a
+      // one-tap suggestion on these plain-text Subject/Message fields,
+      // leaking it into the conversation if tapped/accepted and sent -
+      // see correspondence_details.dart's reply field for the confirmed
+      // 2026-10-10 incident this guards against. Empty list explicitly
+      // opts the field out of autofill entirely.
+      autofillHints: const [],
       decoration: InputDecoration(
         hintText: hint,
         border: OutlineInputBorder(

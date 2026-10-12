@@ -415,6 +415,13 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
                 contentPadding: EdgeInsets.symmetric(vertical: 10),
               ),
               maxLines: null,
+              // ✅ FIX: without this, Android's autofill/keyboard can offer
+              // the device owner's own saved username (e.g. their phone
+              // number) as a one-tap suggestion on this plain-text field -
+              // see correspondence_details.dart's reply field for the
+              // confirmed 2026-10-10 incident this guards against. Empty
+              // list explicitly opts the field out of autofill entirely.
+              autofillHints: const [],
             ),
           ),
         ),

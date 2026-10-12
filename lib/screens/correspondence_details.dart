@@ -336,6 +336,15 @@ class _CorrespondenceDetailsScreenState
                 // always posted as one merged paragraph.
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
+                // ✅ FIX: without this, Android's autofill/keyboard can offer
+                // the device owner's own saved username (e.g. their phone
+                // number) as a one-tap suggestion on this plain-text field,
+                // which if tapped/accepted and sent leaks it into the
+                // conversation - confirmed 2026-10-10 when a parent's own
+                // username was sent as message content to 4 different
+                // correspondence threads. Empty list explicitly opts the
+                // field out of autofill entirely.
+                autofillHints: const [],
               ),
             ),
           ),
