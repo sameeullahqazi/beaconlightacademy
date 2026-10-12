@@ -450,12 +450,13 @@ class DataRepository {
     // If filtering for Timetable tab specifically
     if (isTimetable == true) {
       filters.add(
-          " (title LIKE '%timetable%' OR title LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL)");
+          " (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL)");
     }
 // If filtering for Notices tab, exclude them so they don't double up!
+    // COALESCE guards against a NULL title - see getDiaries() for why.
     else if (isTimetable == false) {
-      filters
-          .add(" NOT (title LIKE '%timetable%' OR title LIKE '%time table%')");
+      filters.add(
+          " NOT (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%')");
     }
 
     return await getTotalRowCountForTable(TableNames.diaries, filters);
@@ -528,12 +529,15 @@ class DataRepository {
     // If filtering for Timetable tab specifically
     if (isTimetable == true) {
       whereClause +=
-          " AND (title LIKE '%timetable%' OR title LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL)";
+          " AND (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL)";
     }
 // If filtering for Notices tab, exclude them so they don't double up!
+    // COALESCE guards against a NULL title - "title LIKE ..." on NULL
+    // evaluates to SQL NULL (not FALSE), which SQLite's WHERE clause treats
+    // as excluding the row entirely, silently dropping untitled notices.
     else if (isTimetable == false) {
       whereClause +=
-          " AND NOT (title LIKE '%timetable%' OR title LIKE '%time table%')";
+          " AND NOT (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%')";
     }
 
     // Search by title or details (full, untruncated column - the substr()

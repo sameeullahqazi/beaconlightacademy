@@ -121,9 +121,10 @@ class _DashboardState extends State<DashboardScreen> {
                       children: [
                         Text(
                           title,
+                          maxLines: 1,
                           style: TextStyle(
                             color: navyBlue,
-                            fontSize: 18,
+                            fontSize: 15,
                             fontWeight: FontWeight.bold,
                           ),
                           textAlign: TextAlign.center,
