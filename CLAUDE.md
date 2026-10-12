@@ -5,7 +5,7 @@
 * **Project Name:** BLA Connect (School Management App)
 * **Target Audience:** Parents, Teachers, Coordinators, Campus Heads, Admins (~2,000+ users)
 * **Tech Stack:**
-* **Frontend:** Flutter (SDK ^3.5.0, targeting Android 15/SDK 35), SQLite (`sqflite`) for local offline-first caching.
+* **Frontend:** Flutter (SDK ^3.5.0, targeting Android 16/SDK 36), SQLite (`sqflite`) for local offline-first caching.
 * **Backend:** PHP, MySQL (custom REST API endpoints).
 * **Infrastructure:** AWS EC2 (8GB RAM), Firebase Cloud Messaging (FCM) for Push Notifications.
 
@@ -29,12 +29,13 @@
 
 ## 3. Known Quirks & Historical Fixes
 
-### Android 15 (SDK 35) 16 KB Page Size Issue
+### 16 KB Page Size Alignment (resolved by the Android 16/API 36 upgrade - no workaround needed)
 
-Google Play strictly enforces 16 KB memory page size alignment for native C++ libraries (e.g., SQLite binaries). To bypass this without risking mass dependency upgrades:
+Google Play strictly enforces 16 KB memory page size alignment for native C++ libraries (e.g., SQLite binaries). On the old Android 15/SDK 35 toolchain, this required a manual workaround: `android.bundle.enableUncompressedNativeLibs=false` in `android/gradle.properties`, plus `android:extractNativeLibs="true"` in `AndroidManifest.xml`.
 
-* `android/gradle.properties`: Add `android.bundle.enableUncompressedNativeLibs=false`
-* `android/app/src/main/AndroidManifest.xml`: Add `android:extractNativeLibs="true"` to the `<application>` tag.
+**Both settings were removed during the Android 16/API 36 toolchain upgrade (2026-10-08) and must NOT be re-added** - AGP 8.1+ (used by the current toolchain) rejects them outright as illegal config, so restoring them will break the build. They're no longer necessary: the much newer bundled NDK (28.2.13676358) handles 16 KB alignment automatically. Verified via `zipalign -c -v -P 16` on the built APK, confirming clean alignment with no workaround in place.
+
+If a future toolchain/NDK downgrade ever reintroduces misalignment, re-verify with the same `zipalign` command before reaching for this workaround again.
 
 ### SQLite Relational Mapping (Contacts)
 
