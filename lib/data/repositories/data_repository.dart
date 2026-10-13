@@ -540,12 +540,21 @@ class DataRepository {
           " AND NOT (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%')";
     }
 
-    // Search by title or details (full, untruncated column - the substr()
-    // in the SELECT below only limits what's returned for the preview, not
-    // what this WHERE clause can match against).
+    // Search by subject, className, title, or details (full, untruncated
+    // column - the substr() in the SELECT below only limits what's
+    // returned for the preview, not what this WHERE clause can match
+    // against).
+    // ✅ FIX: subject and className were missing entirely - the list's
+    // header line (e.g. "URDU - 1 Sapphire Gulshan") is built from those
+    // two fields, not title, so searching "urdu" or "gulshan" found
+    // nothing even though it's right there on screen. title holds the
+    // diary's own heading (e.g. "Bla"), a separate field.
     if (searchQuery != null && searchQuery.trim().isNotEmpty) {
-      whereClause += " AND (title LIKE ? OR details LIKE ?)";
+      whereClause +=
+          " AND (subject LIKE ? OR className LIKE ? OR title LIKE ? OR details LIKE ?)";
       final likeArg = '%${searchQuery.trim()}%';
+      whereArgs.add(likeArg);
+      whereArgs.add(likeArg);
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
     }
@@ -639,10 +648,17 @@ class DataRepository {
       whereArgs.add(studentId);
     }
 
-    // Search by subject or the thread's last-message preview.
+    // Search by subject, the thread's last-message preview, or the
+    // student/sender name shown as the list item's own label.
+    // ✅ FIX: same bug class as diary search (see getDiaries()) -
+    // studentName/senderName are what's actually displayed per row, but
+    // weren't searchable, so e.g. searching a child's name found nothing.
     if (searchQuery != null && searchQuery.trim().isNotEmpty) {
-      whereClause += " AND (subject LIKE ? OR message LIKE ?)";
+      whereClause +=
+          " AND (subject LIKE ? OR message LIKE ? OR studentName LIKE ? OR senderName LIKE ?)";
       final likeArg = '%${searchQuery.trim()}%';
+      whereArgs.add(likeArg);
+      whereArgs.add(likeArg);
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
     }
