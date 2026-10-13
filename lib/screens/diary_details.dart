@@ -464,6 +464,13 @@ class _AttachmentViewerScreenState extends State<AttachmentViewerScreen> {
   late final WebViewController _webViewController;
   bool _isOfficeDoc = false;
   bool _isLoadingWeb = true;
+  // ✅ FIX: previously, a recognized type (PDF/Office doc/image) whose
+  // in-app viewer failed to actually load the file (bad file, server
+  // hiccup, wrong content-type, dropped connection) had no fallback at
+  // all - only genuinely UNRECOGNIZED file types got the "open
+  // externally" escape hatch. Now any load failure, regardless of type,
+  // falls through to that same fallback.
+  bool _hasLoadError = false;
 
   @override
   void initState() {
@@ -492,6 +499,17 @@ class _AttachmentViewerScreenState extends State<AttachmentViewerScreen> {
                 setState(() => _isLoadingWeb = false);
               }
             },
+            onWebResourceError: (WebResourceError error) {
+              // Only the main frame failing matters - Google's gview page
+              // itself can throw harmless errors for sub-resources (ads,
+              // analytics, etc.) that shouldn't trigger our fallback.
+              if (mounted && error.isForMainFrame != false) {
+                setState(() {
+                  _isLoadingWeb = false;
+                  _hasLoadError = true;
+                });
+              }
+            },
           ),
         )
         ..loadRequest(Uri.parse(googleDocsUrl));
@@ -517,8 +535,23 @@ class _AttachmentViewerScreenState extends State<AttachmentViewerScreen> {
   }
 
   Widget _buildBody(bool isPdf, bool isImage) {
+    // A recognized type that failed to actually load falls through to the
+    // exact same "open externally" fallback as a genuinely unknown type,
+    // rather than being stuck on a blank/broken in-app viewer with no way
+    // out.
+    if (_hasLoadError) {
+      return _buildFallback(
+          "This file couldn't be loaded in-app. It may be a connection "
+          "issue - try again, or open it externally below.");
+    }
+
     if (isPdf) {
-      return SfPdfViewer.network(widget.url);
+      return SfPdfViewer.network(
+        widget.url,
+        onDocumentLoadFailed: (PdfDocumentLoadFailedDetails details) {
+          if (mounted) setState(() => _hasLoadError = true);
+        },
+      );
     } else if (isImage) {
       return Center(
         child: InteractiveViewer(
@@ -531,8 +564,16 @@ class _AttachmentViewerScreenState extends State<AttachmentViewerScreen> {
               return const CircularProgressIndicator(
                   color: AppColors.purplePrimary);
             },
-            errorBuilder: (context, error, stackTrace) =>
-                const Text("Could not load image"),
+            errorBuilder: (context, error, stackTrace) {
+              // Scheduled for after this build completes, since
+              // errorBuilder can run during a build and setState can't be
+              // called synchronously from there.
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) setState(() => _hasLoadError = true);
+              });
+              return const CircularProgressIndicator(
+                  color: AppColors.purplePrimary);
+            },
           ),
         ),
       );
@@ -548,30 +589,37 @@ class _AttachmentViewerScreenState extends State<AttachmentViewerScreen> {
         ],
       );
     } else {
-      // Fallback for completely unknown files (.zip, etc.)
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.insert_drive_file, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text("This file type cannot be previewed in-app."),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () async {
-                final uri = Uri.parse(widget.url);
-                if (await canLaunchUrl(uri)) {
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.purplePrimary),
-              child: const Text("Download External",
-                  style: TextStyle(color: Colors.white)),
-            )
-          ],
-        ),
-      );
+      // Genuinely unrecognized file type (.zip, etc.)
+      return _buildFallback("This file type cannot be previewed in-app.");
     }
+  }
+
+  Widget _buildFallback(String message) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.insert_drive_file, size: 64, color: Colors.grey),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Text(message, textAlign: TextAlign.center),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () async {
+              final uri = Uri.parse(widget.url);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              }
+            },
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.purplePrimary),
+            child: const Text("Download External",
+                style: TextStyle(color: Colors.white)),
+          )
+        ],
+      ),
+    );
   }
 }
