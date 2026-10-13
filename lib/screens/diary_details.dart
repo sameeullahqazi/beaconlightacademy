@@ -107,6 +107,12 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
                 : "Assignment",
             showBackButton: true,
             notificationCount: dashboardCtrl.totalUnread,
+            // Switching the global student selector here didn't change the
+            // diary being viewed, just the header's own highlight - a
+            // confusing half-synced state. Disabled rather than made
+            // reactive, to avoid jarring the user away from what they're
+            // reading.
+            showStudentSwitcher: false,
           ),
           // ✅ 1. WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
           body: (_isLoadingComments || _isLoadingDetails)

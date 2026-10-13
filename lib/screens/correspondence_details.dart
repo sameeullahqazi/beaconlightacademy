@@ -164,6 +164,12 @@ class _CorrespondenceDetailsScreenState
             backgroundColor: AppColors.purplePrimary,
             // 2. PASS THE COUNT
             notificationCount: dashboardCtrl.totalUnread,
+            // Switching the global student selector here didn't change the
+            // thread being viewed, just the header's own highlight - a
+            // confusing half-synced state. Disabled rather than made
+            // reactive, to avoid jarring the user away from what they're
+            // reading.
+            showStudentSwitcher: false,
           ),
           // ... (keep rest of body)
           body: _isLoading

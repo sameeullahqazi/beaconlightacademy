@@ -12,7 +12,17 @@ const Color goldAccent = Color(0xFFFFC107);
 class AppHeader extends StatelessWidget implements PreferredSizeWidget {
   final String title;
   final bool showBackButton;
+  // Was only ever used to drive the bell icon's badge count, which was
+  // itself a no-op (onPressed was always empty) - removed 2026-10-13.
+  // Left as a parameter (now unused) rather than touching every call site
+  // that still passes dashboardCtrl.totalUnread, in case a real
+  // notification center surfaces it again later.
   final int notificationCount;
+  // ✅ Hide the student switcher on screens bound to one specific item
+  // (Diary/Correspondence details) - switching the globally selected
+  // student there updated the header's own selection highlight but left
+  // the item being displayed unchanged, a confusing half-synced state.
+  final bool showStudentSwitcher;
   // ✅ Opt-in search support, used by the Diary and Correspondence list
   // screens in place of the bell icon (which has never done anything -
   // onPressed was always a no-op). Left false/null everywhere else so
@@ -34,6 +44,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
     this.searchController,
     this.onSearchChanged,
     this.onSearchToggle,
+    this.showStudentSwitcher = true,
   });
 
   @override
@@ -95,21 +106,12 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
               icon: Icon(isSearching ? Icons.close : Icons.search,
                   color: Colors.white),
               onPressed: onSearchToggle,
-            )
-          else
-            // Bell Icon with Global Count (Badge defaults to Red)
-            IconButton(
-              icon: Badge(
-                isLabelVisible: notificationCount > 0,
-                label: Text(notificationCount.toString()),
-                child: const Icon(Icons.notifications, color: Colors.white),
-              ),
-              onPressed: () {},
             ),
 
           // 2. DYNAMIC DROPDOWN
-          _buildStudentDropdown(
-              context, displayName, user?.studentList ?? [], selectedStudentId),
+          if (showStudentSwitcher)
+            _buildStudentDropdown(context, displayName,
+                user?.studentList ?? [], selectedStudentId),
 
           Padding(
             padding: const EdgeInsets.only(right: 12),
