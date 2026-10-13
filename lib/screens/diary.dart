@@ -568,6 +568,9 @@ class _DiaryListTabState extends State<DiaryListTab> {
     }
 
     final bool isRead = item.bRead == 1;
+    final bool hasAttachment =
+        (item.attachment != null && item.attachment!.isNotEmpty) ||
+            (item.attachment2 != null && item.attachment2!.isNotEmpty);
 
     return InkWell(
       onTap: () {
@@ -626,13 +629,23 @@ class _DiaryListTabState extends State<DiaryListTab> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis),
                         ),
-                      Text(dateStr,
-                          style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontWeight: dateStr == "TODAY"
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                              fontSize: 13)),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (hasAttachment) ...[
+                            Icon(Icons.attach_file,
+                                size: 14, color: Colors.grey.shade600),
+                            const SizedBox(width: 4),
+                          ],
+                          Text(dateStr,
+                              style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontWeight: dateStr == "TODAY"
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                  fontSize: 13)),
+                        ],
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),
