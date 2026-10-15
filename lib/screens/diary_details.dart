@@ -46,6 +46,16 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
   // that read as clutter once the position pill was dropped). Resets to
   // hidden on every page change so it doesn't linger after a swipe.
   bool _showArrowOverlay = false;
+  // ✅ FIX: a plain GestureDetector.onTap here only fired in genuinely empty
+  // space below the content - each page's InteractiveViewer/SelectionArea
+  // (for pan/zoom and text selection) wins the tap gesture arena anywhere
+  // over actual content, so taps on/near text never reached this detector.
+  // Listener bypasses the gesture arena entirely - it gets every raw pointer
+  // event within its (translucent) hit-test bounds regardless of which
+  // recognizer "wins" the tap - so tracking down/up position manually here
+  // reliably detects a tap (small movement) vs. a scroll/swipe (large
+  // movement) anywhere on the page.
+  Offset? _pointerDownPosition;
 
   @override
   void initState() {
@@ -97,6 +107,20 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
     );
   }
 
+  void _handlePointerDown(PointerDownEvent event) {
+    _pointerDownPosition = event.position;
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    final downPos = _pointerDownPosition;
+    _pointerDownPosition = null;
+    if (downPos == null) return;
+    // A real scroll/swipe moves well past this; a tap barely moves at all.
+    if ((event.position - downPos).distance < 12) {
+      setState(() => _showArrowOverlay = !_showArrowOverlay);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentItem = widget.items[_currentIndex];
@@ -117,12 +141,14 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
             // reading.
             showStudentSwitcher: false,
           ),
-          body: GestureDetector(
+          body: Listener(
             // translucent so this still lets taps reach links/buttons in the
-            // diary content underneath - only genuinely empty space toggles
-            // the overlay.
+            // diary content underneath, anywhere on the page - see
+            // _pointerDownPosition's comment for why Listener instead of
+            // GestureDetector.onTap.
             behavior: HitTestBehavior.translucent,
-            onTap: () => setState(() => _showArrowOverlay = !_showArrowOverlay),
+            onPointerDown: _handlePointerDown,
+            onPointerUp: _handlePointerUp,
             child: Stack(
               children: [
                 PageView.builder(

@@ -153,6 +153,12 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
       // simple rather than building a custom stay-open overlay for just two
       // checkboxes.
       onSelected: (value) {
+        // ✅ FIX: closing this popup was handing focus back to the search
+        // TextField underneath (since it was the last-focused widget before
+        // the popup took over), popping the keyboard back up and covering
+        // the now-filtered list. Selecting a filter should dismiss it, not
+        // reopen it.
+        FocusManager.instance.primaryFocus?.unfocus();
         if (value == 'today') {
           onTodayChanged?.call(!todayOnly);
         } else if (value == 'unread') {
