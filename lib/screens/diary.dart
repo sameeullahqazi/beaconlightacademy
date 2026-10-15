@@ -42,6 +42,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
+  bool _todayOnly = false;
+  bool _unreadOnly = false;
 
   @override
   void initState() {
@@ -67,6 +69,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
         _isSearching = false;
         _searchQuery = '';
         _searchController.clear();
+        _todayOnly = false;
+        _unreadOnly = false;
       } else {
         _isSearching = true;
       }
@@ -200,6 +204,11 @@ class _DiaryScreenState extends State<DiaryScreen> {
             searchController: _searchController,
             onSearchToggle: _toggleSearch,
             onSearchChanged: _onSearchChanged,
+            showFilter: _isSearching,
+            todayOnly: _todayOnly,
+            unreadOnly: _unreadOnly,
+            onTodayChanged: (val) => setState(() => _todayOnly = val),
+            onUnreadChanged: (val) => setState(() => _unreadOnly = val),
           ),
           body: DefaultTabController(
             length: 3,
@@ -297,6 +306,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         types: const ['cw', 'hw'],
                         refreshTrigger: _refreshTrigger,
                         searchQuery: _searchQuery,
+                        todayOnly: _todayOnly,
+                        unreadOnly: _unreadOnly,
                       ),
                       DiaryListTab(
                         repo: repo,
@@ -307,6 +318,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         isTimetable: false, // 🚀 Explicitly exclude timetables
                         refreshTrigger: _refreshTrigger,
                         searchQuery: _searchQuery,
+                        todayOnly: _todayOnly,
+                        unreadOnly: _unreadOnly,
                       ),
                       DiaryListTab(
                         repo: repo,
@@ -318,6 +331,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
                             true, // 🚀 Explicitly fetch ONLY timetables
                         refreshTrigger: _refreshTrigger,
                         searchQuery: _searchQuery,
+                        todayOnly: _todayOnly,
+                        unreadOnly: _unreadOnly,
                       ),
                     ],
                   ),
@@ -341,6 +356,8 @@ class DiaryListTab extends StatefulWidget {
   final int refreshTrigger;
   final bool? isTimetable; // ✅ 1. NEW PROPERTY
   final String searchQuery;
+  final bool todayOnly;
+  final bool unreadOnly;
 
   const DiaryListTab({
     super.key,
@@ -351,6 +368,8 @@ class DiaryListTab extends StatefulWidget {
     this.refreshTrigger = 0,
     this.isTimetable, // ✅ Initialize
     this.searchQuery = '',
+    this.todayOnly = false,
+    this.unreadOnly = false,
   });
 
   @override
@@ -410,7 +429,9 @@ class _DiaryListTabState extends State<DiaryListTab> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.studentId != widget.studentId ||
         oldWidget.classId != widget.classId ||
-        oldWidget.searchQuery != widget.searchQuery) {
+        oldWidget.searchQuery != widget.searchQuery ||
+        oldWidget.todayOnly != widget.todayOnly ||
+        oldWidget.unreadOnly != widget.unreadOnly) {
       _loadData(init: true);
     } else if (oldWidget.refreshTrigger != widget.refreshTrigger) {
       _silentReload();
@@ -427,6 +448,8 @@ class _DiaryListTabState extends State<DiaryListTab> {
         types: widget.types,
         isTimetable: widget.isTimetable, // ✅ Pass to repository
         searchQuery: widget.searchQuery,
+        todayOnly: widget.todayOnly,
+        unreadOnly: widget.unreadOnly,
         limit: fetchLimit,
         offset: 0,
       );
@@ -476,6 +499,8 @@ class _DiaryListTabState extends State<DiaryListTab> {
         types: widget.types,
         isTimetable: widget.isTimetable, // ✅ Pass to repository
         searchQuery: widget.searchQuery,
+        todayOnly: widget.todayOnly,
+        unreadOnly: widget.unreadOnly,
         limit: init ? _firstLimit : _nextLimit,
         offset: _offset,
       );
@@ -525,7 +550,7 @@ class _DiaryListTabState extends State<DiaryListTab> {
             }
             return Column(
               children: [
-                _buildItem(_items[index]),
+                _buildItem(_items[index], index),
                 Divider(height: 1, thickness: 1, color: Colors.grey.shade200),
               ],
             );
@@ -535,7 +560,7 @@ class _DiaryListTabState extends State<DiaryListTab> {
     );
   }
 
-  Widget _buildItem(DiaryModel item) {
+  Widget _buildItem(DiaryModel item, int index) {
     final subject = item.subject != null && item.subject!.isNotEmpty
         ? "${item.subject!}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : ""}"
         : "Notice";
@@ -574,29 +599,17 @@ class _DiaryListTabState extends State<DiaryListTab> {
 
     return InkWell(
       onTap: () {
-        if (!isRead) {
-          final loginCtrl =
-              Provider.of<LoginController>(context, listen: false);
-          try {
-            widget.repo
-                .markDiaryAsRead(item.diaryId,
-                    id: item.id, authService: loginCtrl.authService)
-                .catchError((e) {
-              print("Background read sync failed: $e");
-            });
-          } catch (_) {}
-          if (context.mounted) {
-            Provider.of<DashboardController>(context, listen: false)
-                .refreshCounts();
-          }
-        }
-
+        // Marking-as-read (for this item and any others swiped past) now
+        // happens inside DiaryDetailsScreen itself, since swiping can mark
+        // more than just the tapped item read. Always reload on return
+        // (rather than only `if (!isRead)`) so the list reflects whatever
+        // got read during the swipe session, not just this one row.
         Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) => DiaryDetailsScreen(item: item))).then((_) {
-          if (!isRead) _loadData(init: true);
-        });
+                builder: (_) =>
+                    DiaryDetailsScreen(items: _items, initialIndex: index)))
+            .then((_) => _loadData(init: true));
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),

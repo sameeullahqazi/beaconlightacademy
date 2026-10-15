@@ -32,6 +32,15 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
   final TextEditingController? searchController;
   final ValueChanged<String>? onSearchChanged;
   final VoidCallback? onSearchToggle;
+  // ✅ Opt-in Today/Unread filter menu, used alongside search on the Diary
+  // and Correspondence list screens. A funnel icon opens a checkable popup
+  // menu rather than a permanent row of chips above the list, which read as
+  // clutter sitting right on top of the content.
+  final bool showFilter;
+  final bool todayOnly;
+  final bool unreadOnly;
+  final ValueChanged<bool>? onTodayChanged;
+  final ValueChanged<bool>? onUnreadChanged;
 
   const AppHeader({
     super.key,
@@ -45,6 +54,11 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
     this.onSearchChanged,
     this.onSearchToggle,
     this.showStudentSwitcher = true,
+    this.showFilter = false,
+    this.todayOnly = false,
+    this.unreadOnly = false,
+    this.onTodayChanged,
+    this.onUnreadChanged,
   });
 
   @override
@@ -108,6 +122,8 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
               onPressed: onSearchToggle,
             ),
 
+          if (showFilter) _buildFilterMenu(context),
+
           // 2. DYNAMIC DROPDOWN
           if (showStudentSwitcher)
             _buildStudentDropdown(context, displayName,
@@ -119,6 +135,42 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildFilterMenu(BuildContext context) {
+    final bool anyActive = todayOnly || unreadOnly;
+    return PopupMenuButton<String>(
+      icon: Badge(
+        isLabelVisible: anyActive,
+        smallSize: 8,
+        backgroundColor: goldAccent,
+        child: const Icon(Icons.filter_list, color: Colors.white),
+      ),
+      offset: const Offset(0, 50),
+      // Each selection toggles that one filter and closes the menu - tap the
+      // funnel icon again to toggle the other one. Keeps the menu itself
+      // simple rather than building a custom stay-open overlay for just two
+      // checkboxes.
+      onSelected: (value) {
+        if (value == 'today') {
+          onTodayChanged?.call(!todayOnly);
+        } else if (value == 'unread') {
+          onUnreadChanged?.call(!unreadOnly);
+        }
+      },
+      itemBuilder: (context) => [
+        _buildMenuItem(
+            id: 'today',
+            text: 'Today',
+            icon: Icons.today,
+            isSelected: todayOnly),
+        _buildMenuItem(
+            id: 'unread',
+            text: 'Unread',
+            icon: Icons.mark_email_unread,
+            isSelected: unreadOnly),
+      ],
     );
   }
 

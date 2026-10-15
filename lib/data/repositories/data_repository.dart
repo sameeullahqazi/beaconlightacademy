@@ -497,6 +497,8 @@ class DataRepository {
     int offset = 0, // Default to 0 (start)
     bool? isTimetable,
     String? searchQuery,
+    bool unreadOnly = false,
+    bool todayOnly = false,
   }) async {
     String whereClause = "is_deleted = 0";
     List<dynamic> whereArgs = [];
@@ -557,6 +559,18 @@ class DataRepository {
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
+    }
+
+    if (unreadOnly) {
+      whereClause += " AND bRead = 0";
+    }
+
+    // createdDate is the same field _buildItem() parses to decide whether a
+    // row's date badge reads "TODAY" - matching that here keeps this filter
+    // consistent with what the list already visually labels as today's.
+    if (todayOnly) {
+      whereClause += " AND createdDate LIKE ?";
+      whereArgs.add('${DateFormat('yyyy-MM-dd').format(DateTime.now())}%');
     }
 
     // Order by date descending
@@ -634,6 +648,8 @@ class DataRepository {
     int limit = 100,
     int offset = 0,
     String? searchQuery,
+    bool unreadOnly = false,
+    bool todayOnly = false,
   }) async {
     String whereClause = "is_deleted = 0";
     List<dynamic> whereArgs = [];
@@ -661,6 +677,18 @@ class DataRepository {
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
       whereArgs.add(likeArg);
+    }
+
+    if (unreadOnly) {
+      whereClause += " AND bRead = 0";
+    }
+
+    // modifiedDate is the structured/sortable date field (unlike `date`,
+    // which is a display-formatted string like "EEE, dd/MM/yyyy hh:mm:ss a"
+    // not directly comparable here).
+    if (todayOnly) {
+      whereClause += " AND modifiedDate LIKE ?";
+      whereArgs.add('${DateFormat('yyyy-MM-dd').format(DateTime.now())}%');
     }
 
     // Order by date descending (newest first)

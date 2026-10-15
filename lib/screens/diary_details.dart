@@ -13,16 +13,210 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 
-class DiaryDetailsScreen extends StatefulWidget {
-  final DiaryModel item;
+// Matches diary.dart's navyBlue - duplicated locally rather than imported
+// since diary.dart isn't otherwise a dependency of this screen.
+const Color navyBlue = Color(0xFF041434);
 
-  const DiaryDetailsScreen({super.key, required this.item});
+// Swipeable wrapper around a single tab's already-loaded diary items.
+// Scoped to whatever list the caller passed in (e.g. just CW/HW, or just
+// Notices) - the caller (diary.dart) is responsible for only ever passing
+// its own tab's items, so swiping never crosses into a different category.
+// Only swipes within what's already been paginated into that list; reaching
+// either end simply stops (no further auto-pagination while swiping).
+class DiaryDetailsScreen extends StatefulWidget {
+  final List<DiaryModel> items;
+  final int initialIndex;
+
+  const DiaryDetailsScreen({
+    super.key,
+    required this.items,
+    required this.initialIndex,
+  });
 
   @override
   State<DiaryDetailsScreen> createState() => _DiaryDetailsScreenState();
 }
 
 class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
+  late final PageController _pageController;
+  late int _currentIndex;
+  final Set<String> _markedReadIds = {};
+  // Swipe affordance: the prev/next arrows stay hidden until the page is
+  // tapped, then show faintly over the content (not a fixed toolbar strip -
+  // that read as clutter once the position pill was dropped). Resets to
+  // hidden on every page change so it doesn't linger after a swipe.
+  bool _showArrowOverlay = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+    // Mark the diary the user actually tapped as read immediately, same as
+    // swiping to any other page does below.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _markReadIfNeeded(widget.items[widget.initialIndex]);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _markReadIfNeeded(DiaryModel item) {
+    if (item.bRead == 1 || _markedReadIds.contains(item.id)) return;
+    _markedReadIds.add(item.id);
+    item.bRead = 1; // Instant local state so re-visiting this page via swipe
+    // doesn't re-fire the mark-as-read call.
+
+    final loginCtrl = Provider.of<LoginController>(context, listen: false);
+    final repo = loginCtrl.getDataRepository();
+    if (repo != null) {
+      try {
+        repo
+            .markDiaryAsRead(item.diaryId,
+                id: item.id, authService: loginCtrl.authService)
+            .catchError((e) {
+          print("Background read sync failed: $e");
+        });
+      } catch (_) {}
+    }
+    if (mounted) {
+      Provider.of<DashboardController>(context, listen: false)
+          .refreshCounts();
+    }
+  }
+
+  void _goToPage(int index) {
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentItem = widget.items[_currentIndex];
+    final bool hasMultiple = widget.items.length > 1;
+    return Consumer<DashboardController>(
+      builder: (context, dashboardCtrl, child) {
+        return Scaffold(
+          appBar: AppHeader(
+            title: currentItem.subject != null
+                ? "${currentItem.subject!}${currentItem.className != null && currentItem.className!.isNotEmpty ? " - ${currentItem.className!}" : "Assignment"}"
+                : "Assignment",
+            showBackButton: true,
+            notificationCount: dashboardCtrl.totalUnread,
+            // Switching the global student selector here didn't change the
+            // diary being viewed, just the header's own highlight - a
+            // confusing half-synced state. Disabled rather than made
+            // reactive, to avoid jarring the user away from what they're
+            // reading.
+            showStudentSwitcher: false,
+          ),
+          body: GestureDetector(
+            // translucent so this still lets taps reach links/buttons in the
+            // diary content underneath - only genuinely empty space toggles
+            // the overlay.
+            behavior: HitTestBehavior.translucent,
+            onTap: () => setState(() => _showArrowOverlay = !_showArrowOverlay),
+            child: Stack(
+              children: [
+                PageView.builder(
+                  controller: _pageController,
+                  itemCount: widget.items.length,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentIndex = index;
+                      _showArrowOverlay = false;
+                    });
+                    _markReadIfNeeded(widget.items[index]);
+                  },
+                  itemBuilder: (context, index) {
+                    return _DiaryDetailBody(item: widget.items[index]);
+                  },
+                ),
+                if (hasMultiple && _showArrowOverlay && _currentIndex > 0)
+                  Positioned(
+                    left: 8,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(
+                      child: Opacity(
+                        opacity: 0.2,
+                        child: _NavArrow(
+                          icon: Icons.chevron_left,
+                          onTap: () => _goToPage(_currentIndex - 1),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (hasMultiple &&
+                    _showArrowOverlay &&
+                    _currentIndex < widget.items.length - 1)
+                  Positioned(
+                    right: 8,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(
+                      child: Opacity(
+                        opacity: 0.2,
+                        child: _NavArrow(
+                          icon: Icons.chevron_right,
+                          onTap: () => _goToPage(_currentIndex + 1),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Small circular overlay button used for the prev/next swipe affordance.
+class _NavArrow extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _NavArrow({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: navyBlue,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, color: Colors.white, size: 28),
+        ),
+      ),
+    );
+  }
+}
+
+// The actual per-diary content (details, attachments, comments) - one
+// instance per PageView page, each owning its own full-details/comments
+// fetch so swiping doesn't mix state between diaries.
+class _DiaryDetailBody extends StatefulWidget {
+  final DiaryModel item;
+
+  const _DiaryDetailBody({required this.item});
+
+  @override
+  State<_DiaryDetailBody> createState() => _DiaryDetailBodyState();
+}
+
+class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
   final TextEditingController _commentController = TextEditingController();
   bool _isSending = false;
 
@@ -100,94 +294,77 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
         }
         _lastTotalUnread = dashboardCtrl.totalUnread;
 
-        return Scaffold(
-          appBar: AppHeader(
-            title: widget.item.subject != null
-                ? "${widget.item.subject!}${widget.item.className != null && widget.item.className!.isNotEmpty ? " - ${widget.item.className!}" : "Assignment"}"
-                : "Assignment",
-            showBackButton: true,
-            notificationCount: dashboardCtrl.totalUnread,
-            // Switching the global student selector here didn't change the
-            // diary being viewed, just the header's own highlight - a
-            // confusing half-synced state. Disabled rather than made
-            // reactive, to avoid jarring the user away from what they're
-            // reading.
-            showStudentSwitcher: false,
-          ),
-          // ✅ 1. WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
-          body: (_isLoadingComments || _isLoadingDetails)
-              ? const Center(
-                  child:
-                      CircularProgressIndicator(color: AppColors.purplePrimary))
-              : InteractiveViewer(
-                  minScale: 1.0,
-                  maxScale: 4.0, // Allow users to zoom in up to 4x
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildHeader(widget.item),
-                        const SizedBox(height: 24),
+        // ✅ WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
+        return (_isLoadingComments || _isLoadingDetails)
+            ? const Center(
+                child:
+                    CircularProgressIndicator(color: AppColors.purplePrimary))
+            : InteractiveViewer(
+                minScale: 1.0,
+                maxScale: 4.0, // Allow users to zoom in up to 4x
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildHeader(widget.item),
+                      const SizedBox(height: 24),
 
-                        // ✅ 2. HTML WIDGET (Renders Bold, Italic, Breaks correctly)
-                        // ✅ 2. WRAPPED IN SELECTION AREA FOR COPY/PASTE
-                        SelectionArea(
-                          child: HtmlWidget(
-                            widget.item.details ?? "",
-                            textStyle: const TextStyle(
-                                fontSize: 16,
-                                height: 1.5,
-                                color: Colors.black87),
-                            // ✅ MAKE LINKS AUTOMATICALLY CLICKABLE!
-                            onTapUrl: (url) async {
-                              final uri = Uri.parse(url);
-                              if (await canLaunchUrl(uri)) {
-                                await launchUrl(uri,
-                                    mode: LaunchMode.externalApplication);
-                                return true;
-                              }
-                              return false;
-                            },
-                            onErrorBuilder: (context, element, error) =>
-                                Text('$element error: $error'),
-                            onLoadingBuilder:
-                                (context, element, loadingProgress) =>
-                                    const CircularProgressIndicator(),
-                          ),
+                      // ✅ HTML WIDGET (Renders Bold, Italic, Breaks correctly)
+                      // ✅ WRAPPED IN SELECTION AREA FOR COPY/PASTE
+                      SelectionArea(
+                        child: HtmlWidget(
+                          widget.item.details ?? "",
+                          textStyle: const TextStyle(
+                              fontSize: 16,
+                              height: 1.5,
+                              color: Colors.black87),
+                          // ✅ MAKE LINKS AUTOMATICALLY CLICKABLE!
+                          onTapUrl: (url) async {
+                            final uri = Uri.parse(url);
+                            if (await canLaunchUrl(uri)) {
+                              await launchUrl(uri,
+                                  mode: LaunchMode.externalApplication);
+                              return true;
+                            }
+                            return false;
+                          },
+                          onErrorBuilder: (context, element, error) =>
+                              Text('$element error: $error'),
+                          onLoadingBuilder:
+                              (context, element, loadingProgress) =>
+                                  const CircularProgressIndicator(),
                         ),
+                      ),
 
-                        const SizedBox(height: 24),
-                        if (widget.item.attachment != null ||
-                            widget.item.attachment2 != null)
-                          _buildAttachments(
-                              widget.item.attachment, widget.item.attachment2),
-                        // ✅ Diary comments temporarily disabled 2026-10-03
-                        // (mutual staff decision - Samee + Andaleeb, school
-                        // head) after reports of abusive/offensive parent
-                        // comments, even with the staff-only-visibility
-                        // restriction added 2026-10-02. Commented out rather
-                        // than removed in case the decision is revisited -
-                        // the loading/fetch logic above (_loadComments(),
-                        // the live-refresh wiring in build()) is left intact
-                        // so re-enabling this is just uncommenting the block
-                        // below.
-                        // const SizedBox(height: 32),
-                        // const Divider(height: 1),
-                        // const SizedBox(height: 16),
-                        // _isLoadingComments
-                        //     ? const Center(child: CircularProgressIndicator())
-                        //     : _buildCommentsSection(_comments),
-                      ],
-                    ),
+                      const SizedBox(height: 24),
+                      if (widget.item.attachment != null ||
+                          widget.item.attachment2 != null)
+                        _buildAttachments(
+                            widget.item.attachment, widget.item.attachment2),
+                      // ✅ Diary comments temporarily disabled 2026-10-03
+                      // (mutual staff decision - Samee + Andaleeb, school
+                      // head) after reports of abusive/offensive parent
+                      // comments, even with the staff-only-visibility
+                      // restriction added 2026-10-02. Commented out rather
+                      // than removed in case the decision is revisited -
+                      // the loading/fetch logic above (_loadComments(),
+                      // the live-refresh wiring in build()) is left intact
+                      // so re-enabling this is just uncommenting the block
+                      // below.
+                      // const SizedBox(height: 32),
+                      // const Divider(height: 1),
+                      // const SizedBox(height: 16),
+                      // _isLoadingComments
+                      //     ? const Center(child: CircularProgressIndicator())
+                      //     : _buildCommentsSection(_comments),
+                    ],
                   ),
                 ),
-        );
+              );
       },
     );
   }
-
-  // ... (Rest of your methods: _postComment, _buildHeader, etc. remain exactly the same) ...
 
   Future<void> _postComment() async {
     final text = _commentController.text.trim();
@@ -223,7 +400,14 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
     String dateStr = item.createdDate;
     try {
       final date = DateTime.parse(item.createdDate);
-      dateStr = DateFormat('EEE, dd/MM/yyyy').format(date);
+      final now = DateTime.now();
+      if (date.year == now.year &&
+          date.month == now.month &&
+          date.day == now.day) {
+        dateStr = "Today";
+      } else {
+        dateStr = DateFormat('EEE, dd/MM/yyyy').format(date);
+      }
     } catch (e) {
       dateStr = item.createdDate.split(' ').first;
     }

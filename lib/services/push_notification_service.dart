@@ -281,6 +281,10 @@ class PushNotificationService {
                 authService: loginCtrl.authService,
                 id: diary.id.toString(),
               );
+              // DiaryDetailsScreen also marks-as-read on open (for swipe
+              // support) - set this locally so it doesn't redundantly fire
+              // a second markDiaryAsRead call for the same diary.
+              diary.bRead = 1;
             } catch (e) {
               print("Server read sync skipped: $e");
             }
@@ -298,7 +302,7 @@ class PushNotificationService {
             DataSyncService.instance.notifyExternalDataChange();
 
             // ✅ 4. ADD THIS: Navigate to the Details Screen!
-            Get.to(() => DiaryDetailsScreen(item: diary));
+            Get.to(() => DiaryDetailsScreen(items: [diary], initialIndex: 0));
             return;
           }
         }
@@ -380,6 +384,9 @@ class PushNotificationService {
                 authService: loginCtrl.authService,
                 id: diary.id.toString(),
               );
+              // See the diary_new branch above - avoids a redundant second
+              // markDiaryAsRead call when DiaryDetailsScreen opens.
+              diary.bRead = 1;
             } catch (_) {}
 
             try {
@@ -388,7 +395,7 @@ class PushNotificationService {
             } catch (_) {}
 
             // ✅ 4. Navigate directly to the Diary Details Screen!
-            Get.to(() => DiaryDetailsScreen(item: diary));
+            Get.to(() => DiaryDetailsScreen(items: [diary], initialIndex: 0));
             return;
           } else {
             // Edge case: They tapped a comment for a diary their phone doesn't have yet!

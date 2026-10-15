@@ -27,6 +27,8 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
+  bool _todayOnly = false;
+  bool _unreadOnly = false;
 
   @override
   void initState() {
@@ -48,6 +50,8 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
         _isSearching = false;
         _searchQuery = '';
         _searchController.clear();
+        _todayOnly = false;
+        _unreadOnly = false;
       } else {
         _isSearching = true;
       }
@@ -72,7 +76,9 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
 
         return Scaffold(
           appBar: AppHeader(
-            title: "CORRESPONDENCES",
+            // Not all-caps - that was truncating to "CORRESPONDEN..." at
+            // this header's width.
+            title: "Correspondences",
             showBackButton: true,
             backgroundColor: AppColors.purplePrimary,
             notificationCount: dashboardCtrl.totalUnread,
@@ -81,12 +87,20 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
             searchController: _searchController,
             onSearchToggle: _toggleSearch,
             onSearchChanged: _onSearchChanged,
+            showFilter: _isSearching,
+            todayOnly: _todayOnly,
+            unreadOnly: _unreadOnly,
+            onTodayChanged: (val) => setState(() => _todayOnly = val),
+            onUnreadChanged: (val) => setState(() => _unreadOnly = val),
           ),
           body: Stack(
             children: [
               CorrespondenceList(
-                studentId: _currentStudentId, // ✅ Removed the totalUnread trap!
+                studentId:
+                    _currentStudentId, // ✅ Removed the totalUnread trap!
                 searchQuery: _searchQuery,
+                todayOnly: _todayOnly,
+                unreadOnly: _unreadOnly,
               ),
               Positioned(
                 right: 16,
@@ -117,11 +131,15 @@ class _CorrespondenceScreenState extends State<CorrespondenceScreen> {
 class CorrespondenceList extends StatefulWidget {
   final String? studentId;
   final String searchQuery;
+  final bool todayOnly;
+  final bool unreadOnly;
 
   const CorrespondenceList(
       {super.key,
       required this.studentId,
-      this.searchQuery = ''}); // ✅ Cleaned up constructor
+      this.searchQuery = '',
+      this.todayOnly = false,
+      this.unreadOnly = false}); // ✅ Cleaned up constructor
 
   @override
   State<CorrespondenceList> createState() => _CorrespondenceListState();
@@ -184,7 +202,9 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     // ✅ 4. Cleaned up didUpdateWidget
     if (!_isFirstBuild &&
         (oldWidget.studentId != widget.studentId ||
-            oldWidget.searchQuery != widget.searchQuery)) {
+            oldWidget.searchQuery != widget.searchQuery ||
+            oldWidget.todayOnly != widget.todayOnly ||
+            oldWidget.unreadOnly != widget.unreadOnly)) {
       _loadData(init: true);
     }
   }
@@ -224,6 +244,8 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
       final newItems = await repo.getCorrespondences(
         studentId: widget.studentId,
         searchQuery: widget.searchQuery,
+        todayOnly: widget.todayOnly,
+        unreadOnly: widget.unreadOnly,
         limit: init ? _firstLimit : _nextLimit,
         offset: _offset,
       );
@@ -298,6 +320,20 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     if (date == null || date.isEmpty) return "";
     final parts = date.trim().split(' ');
     return parts.take(2).join(' ');
+  }
+
+  // Same "Today" treatment as the Diary list - item.date is a display
+  // string ("EEE, dd/MM/yyyy ...") that can't be compared directly, so this
+  // checks the structured modifiedDate field instead.
+  String _displayDate(CorrespondenceModel item) {
+    final now = DateTime.now();
+    final modDate = item.modDate;
+    if (modDate.year == now.year &&
+        modDate.month == now.month &&
+        modDate.day == now.day) {
+      return "Today";
+    }
+    return _dateOnly(item.date);
   }
 
   Widget _buildCorrespondenceItem(CorrespondenceModel item) {
@@ -420,7 +456,7 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
                       // two space-separated tokens are the weekday+date
                       // regardless of whether a time portion follows.
                       Text(
-                        _dateOnly(item.date),
+                        _displayDate(item),
                         style: TextStyle(
                             color: Colors.grey.shade600, fontSize: 12),
                       ),

@@ -159,7 +159,10 @@ class _CorrespondenceDetailsScreenState
         });
         return Scaffold(
           appBar: AppHeader(
-            title: widget.item.subject ?? "Conversation",
+            // Lowercased: subjects are often typed in all-caps by senders,
+            // which takes up more header width at the same font size and
+            // was getting truncated - lowercase reads just as well and fits.
+            title: widget.item.subject?.toLowerCase() ?? "Conversation",
             showBackButton: true,
             backgroundColor: AppColors.purplePrimary,
             // 2. PASS THE COUNT
