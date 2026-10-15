@@ -320,6 +320,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         searchQuery: _searchQuery,
                         todayOnly: _todayOnly,
                         unreadOnly: _unreadOnly,
+                        emptySubjectLabel: 'Notice',
                       ),
                       DiaryListTab(
                         repo: repo,
@@ -333,6 +334,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         searchQuery: _searchQuery,
                         todayOnly: _todayOnly,
                         unreadOnly: _unreadOnly,
+                        emptySubjectLabel: 'Timetable',
                       ),
                     ],
                   ),
@@ -358,6 +360,11 @@ class DiaryListTab extends StatefulWidget {
   final String searchQuery;
   final bool todayOnly;
   final bool unreadOnly;
+  // Fallback heading for rows with no subject (general notices/timetables
+  // aren't tied to a subject) - "Notice" for the Notices tab, "Timetable"
+  // for the Timetable tab, so each tab's untitled rows read correctly
+  // instead of every tab showing the same generic "Notice".
+  final String emptySubjectLabel;
 
   const DiaryListTab({
     super.key,
@@ -370,6 +377,7 @@ class DiaryListTab extends StatefulWidget {
     this.searchQuery = '',
     this.todayOnly = false,
     this.unreadOnly = false,
+    this.emptySubjectLabel = 'Notice',
   });
 
   @override
@@ -561,9 +569,14 @@ class _DiaryListTabState extends State<DiaryListTab> {
   }
 
   Widget _buildItem(DiaryModel item, int index) {
+    // ✅ FIX: the no-subject fallback ("Notice"/"Timetable" for general
+    // notices and timetables, which aren't tied to a subject) was dropping
+    // the className entirely, unlike the subject branch right next to it -
+    // so e.g. every Notices-tab row just said "NOTICE" instead of "NOTICE -
+    // 1 Emerald Gulshan" the way a CW/HW row reads "ENGLISH A - ...".
     final subject = item.subject != null && item.subject!.isNotEmpty
         ? "${item.subject!}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : ""}"
-        : "Notice";
+        : "${widget.emptySubjectLabel}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : ""}";
     final subtitleHeader = item.title ?? "";
     final rawDetails = item.details
             // getDiaries() truncates `details` via SQL substr() for
@@ -607,8 +620,10 @@ class _DiaryListTabState extends State<DiaryListTab> {
         Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) =>
-                    DiaryDetailsScreen(items: _items, initialIndex: index)))
+                builder: (_) => DiaryDetailsScreen(
+                    items: _items,
+                    initialIndex: index,
+                    emptySubjectLabel: widget.emptySubjectLabel)))
             .then((_) => _loadData(init: true));
       },
       child: Container(

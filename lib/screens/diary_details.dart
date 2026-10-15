@@ -26,11 +26,18 @@ const Color navyBlue = Color(0xFF041434);
 class DiaryDetailsScreen extends StatefulWidget {
   final List<DiaryModel> items;
   final int initialIndex;
+  // Fallback heading for an item with no subject (general notices/
+  // timetables) - "Notice" or "Timetable" depending on which tab opened
+  // this screen, so the title/body heading matches what the list row
+  // already showed. Defaults to "Notice" for call sites (e.g. a push
+  // notification tap) that don't have tab context to pass along.
+  final String emptySubjectLabel;
 
   const DiaryDetailsScreen({
     super.key,
     required this.items,
     required this.initialIndex,
+    this.emptySubjectLabel = 'Notice',
   });
 
   @override
@@ -143,9 +150,16 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
       builder: (context, dashboardCtrl, child) {
         return Scaffold(
           appBar: AppHeader(
-            title: currentItem.subject != null
-                ? "${currentItem.subject!}${currentItem.className != null && currentItem.className!.isNotEmpty ? " - ${currentItem.className!}" : "Assignment"}"
-                : "Assignment",
+            // ✅ FIX: was appending the literal string "Assignment" onto the
+            // subject whenever className happened to be empty (e.g. "URDU" ->
+            // "URDUAssignment"), and showing bare "Assignment" instead of
+            // "Notice"/"Timetable" for subject-less items - inconsistent with
+            // both the list row's heading and this screen's own body caption
+            // just below.
+            title: currentItem.subject != null &&
+                    currentItem.subject!.isNotEmpty
+                ? "${currentItem.subject!}${currentItem.className != null && currentItem.className!.isNotEmpty ? " - ${currentItem.className!}" : ""}"
+                : "${widget.emptySubjectLabel}${currentItem.className != null && currentItem.className!.isNotEmpty ? " - ${currentItem.className!}" : ""}",
             showBackButton: true,
             notificationCount: dashboardCtrl.totalUnread,
             // Switching the global student selector here didn't change the
@@ -179,7 +193,9 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
                     _markReadIfNeeded(widget.items[index]);
                   },
                   itemBuilder: (context, index) {
-                    return _DiaryDetailBody(item: widget.items[index]);
+                    return _DiaryDetailBody(
+                        item: widget.items[index],
+                        emptySubjectLabel: widget.emptySubjectLabel);
                   },
                 ),
                 if (hasMultiple && _showArrowOverlay && _currentIndex > 0)
@@ -252,8 +268,10 @@ class _NavArrow extends StatelessWidget {
 // fetch so swiping doesn't mix state between diaries.
 class _DiaryDetailBody extends StatefulWidget {
   final DiaryModel item;
+  final String emptySubjectLabel;
 
-  const _DiaryDetailBody({required this.item});
+  const _DiaryDetailBody(
+      {required this.item, this.emptySubjectLabel = 'Notice'});
 
   @override
   State<_DiaryDetailBody> createState() => _DiaryDetailBodyState();
@@ -459,9 +477,12 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
+          // ✅ FIX: same "Assignment"-appended-onto-the-subject bug and
+          // generic "Notice" (no className, no Timetable distinction) as
+          // the AppHeader title above - see DiaryDetailsScreen's comment.
           (item.subject != null && item.subject!.isNotEmpty)
-              ? "${item.subject!.toUpperCase()}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : "Assignment"}"
-              : "Notice",
+              ? "${item.subject!.toUpperCase()}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : ""}"
+              : "${widget.emptySubjectLabel.toUpperCase()}${item.className != null && item.className!.isNotEmpty ? " - ${item.className!}" : ""}",
           style: const TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.bold,
