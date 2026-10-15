@@ -56,6 +56,12 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
   // reliably detects a tap (small movement) vs. a scroll/swipe (large
   // movement) anywhere on the page.
   Offset? _pointerDownPosition;
+  // ✅ FIX: onPageChanged fires for both a swipe and a _goToPage() arrow
+  // tap, but only a swipe should hide the overlay - tapping the arrow to
+  // navigate shouldn't force a re-reveal tap before the next arrow tap
+  // works. Set right before requesting an arrow-driven page change, and
+  // consumed (not reset) by the very next onPageChanged.
+  bool _navigatingViaArrow = false;
 
   @override
   void initState() {
@@ -100,6 +106,14 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
   }
 
   void _goToPage(int index) {
+    _navigatingViaArrow = true;
+    // The same tap that hits an arrow also reaches the outer Listener
+    // (it gets every pointer event regardless of what else handles it,
+    // including this arrow's own InkWell), and Listener's onPointerUp
+    // fires before this onTap does - so it may have just toggled the
+    // overlay off. Force it back on rather than leaving that race in
+    // charge of whether it's visible for the page that's about to show.
+    setState(() => _showArrowOverlay = true);
     _pageController.animateToPage(
       index,
       duration: const Duration(milliseconds: 250),
@@ -157,7 +171,10 @@ class _DiaryDetailsScreenState extends State<DiaryDetailsScreen> {
                   onPageChanged: (index) {
                     setState(() {
                       _currentIndex = index;
-                      _showArrowOverlay = false;
+                      if (!_navigatingViaArrow) {
+                        _showArrowOverlay = false;
+                      }
+                      _navigatingViaArrow = false;
                     });
                     _markReadIfNeeded(widget.items[index]);
                   },

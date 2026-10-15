@@ -634,14 +634,24 @@ class _DiaryListTabState extends State<DiaryListTab> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      if (subtitleHeader.isNotEmpty)
-                        Expanded(
-                          child: Text(subtitleHeader,
-                              style: TextStyle(
-                                  color: Colors.blue.shade700, fontSize: 13),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                        ),
+                      // ✅ FIX: this Expanded must always be present, even
+                      // when there's no title - spaceBetween only pushes
+                      // its children apart when there's more than one; with
+                      // the title-less branch skipping it entirely, the
+                      // date Row became the Row's only child and rendered
+                      // at the start instead of the end (e.g. untitled
+                      // Islamiat notices showing "TODAY" flush left instead
+                      // of aligned with every other row's date).
+                      Expanded(
+                        child: subtitleHeader.isNotEmpty
+                            ? Text(subtitleHeader,
+                                style: TextStyle(
+                                    color: Colors.blue.shade700,
+                                    fontSize: 13),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis)
+                            : const SizedBox.shrink(),
+                      ),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
