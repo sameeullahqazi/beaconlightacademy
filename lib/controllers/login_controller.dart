@@ -106,7 +106,7 @@ class LoginController with ChangeNotifier {
           }
 
           // Create DB and Init Repo
-          await createDB(username, topUsername != null);
+          await createDB(username);
 
           // Show Progress Dialog
           Get.dialog(
@@ -298,7 +298,7 @@ class LoginController with ChangeNotifier {
           await SQLiteDB.deleteDatabase(username);
         }
       } else if (checkPassword) {
-        await createDB(username, topUsername != null);
+        await createDB(username);
         var dbSuccess = await _sqLiteDB!.open(shouldCreateSchema: false);
 
         if (dbSuccess) {
@@ -426,10 +426,23 @@ class LoginController with ChangeNotifier {
 
   initControllers() {}
 
-  Future<void> createDB(String dbName, bool bClose) async {
-    if (bClose == true) {
-      await _sqLiteDB?.close();
-    }
+  Future<void> createDB(String dbName) async {
+    // ✅ FIX (2026-11-25): always close any existing connection first,
+    // regardless of caller. This used to be conditional on a `bClose`
+    // param (true only when `topUsername != null`, i.e. an explicit
+    // account-switch) - but a normal interactive login (login.dart's
+    // button handler) never passes topUsername at all, so a *retry* after
+    // a failed first attempt in the same app session (e.g. the
+    // "Credentials not found" flow, which constructs _sqLiteDB via its own
+    // code path before this) skipped closing it. The abandoned-but-never-
+    // closed connection could then interact badly with sqflite's own
+    // per-path connection handling once the file was deleted and reopened
+    // moments later - confirmed live, a fresh "successful" login's file
+    // descriptors pointed at an already-unlinked inode. _sqLiteDB?.close()
+    // is a safe no-op when there's genuinely nothing open yet (e.g.
+    // tryAutoLogin() on a cold start), so there's no cost to always doing
+    // it.
+    await _sqLiteDB?.close();
     _sqLiteDB = SQLiteDB(dbName);
 
     // Initialize repository
@@ -752,8 +765,7 @@ class LoginController with ChangeNotifier {
       password = storedPwd;
 
       // 5. Initialize Database & Repository
-      // We pass 'false' to 'bClose' because there is no previous DB open to close
-      await createDB(username, false);
+      await createDB(username);
 
       var dbSuccess = await _sqLiteDB!.open(shouldCreateSchema: false);
       if (!dbSuccess) {

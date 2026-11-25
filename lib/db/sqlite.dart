@@ -303,7 +303,19 @@ class SQLiteDB extends BaseDB {
       );
 
       if (shouldCreateSchema) {
-        await createDb();
+        // ✅ FIX (2026-11-25): createDb() can report success while actually
+        // leaving the real file with no schema at all (observed live:
+        // no exception anywhere, yet only sqflite's own auto-created
+        // android_metadata table existed afterward) - open() used to
+        // return true unconditionally here regardless, so callers believed
+        // the database was ready and went on to crash much later with a
+        // confusing "no such table" error instead of the existing
+        // "Database Error" dialog this failure case was always meant to
+        // show.
+        final bool schemaOk = await createDb();
+        if (!schemaOk) {
+          return false;
+        }
       }
 
       return true;
@@ -320,7 +332,9 @@ class SQLiteDB extends BaseDB {
     await db.close();
   }
 
-  createDb() async {
+  // ✅ FIX (2026-11-25): now returns a real success/failure result instead
+  // of silently swallowing every error - see open()'s call site comment.
+  Future<bool> createDb() async {
     final db = database;
     try {
       // print("SQLite::createDb() - Loading schema...");
@@ -348,13 +362,32 @@ class SQLiteDB extends BaseDB {
         await db.execute(finalCommand);
       }
 
+      // ✅ FIX: verify the schema actually landed before reporting success.
+      // This has been observed to "succeed" (every db.execute() call
+      // above resolving, no exception reaching the catch block below)
+      // while the real file ended up with zero real tables - only
+      // sqflite's own auto-created `android_metadata`. Root cause not
+      // fully pinned down, but checking for a real table's existence
+      // catches the failure regardless of the underlying mechanism,
+      // instead of letting the caller believe schema creation worked when
+      // it didn't.
+      final tables = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='users'");
+      if (tables.isEmpty) {
+        print(
+            "❌ SQLite::createDb() - schema verification failed: 'users' table missing after running schema.sql");
+        return false;
+      }
+
       // print("✅ SQLite::createDb() - Schema initialized successfully");
+      return true;
     } catch (e) {
       print("❌ SQLite::createDb() Error: $e");
       // Helpful tip for the specific error you saw
       if (e.toString().contains("Unable to load asset")) {
         // print("⚠️ HINT: Did you add 'assets/db/schema.sql' to your pubspec.yaml?");
       }
+      return false;
     }
   }
 

@@ -154,6 +154,10 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
   int _offset = 0;
   final int _firstLimit = 25;
   final int _nextLimit = 25;
+  // ✅ FIX (2026-11-25): guards against an in-flight pagination fetch's
+  // stale result landing after a newer init has already replaced _items/
+  // _offset - see _loadData()'s comment for the full bug this fixes.
+  int _loadRequestId = 0;
   StreamSubscription? _syncSubscription;
   bool _isFirstBuild = true;
 
@@ -226,23 +230,42 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
   // _refreshFromServer() for the full reasoning.
   //
   // ✅ NEW (2026-11-22, design-flaws-and-changes doc): scoped to just
-  // FetchAction.correspondences + correspondencesMessages - matches
-  // diary.dart's identical scoping. A thread's own preview/unread count
-  // lives on the correspondences row while its messages live separately,
-  // so both are needed; nothing else on this screen depends on diaries/
-  // contacts/classes/report cards.
+  // correspondences - matches diary.dart's identical scoping; nothing else
+  // on this screen depends on diaries/contacts/classes/report cards.
+  //
+  // ✅ UPDATED (2026-11-25): syncCorrespondenceSyncDetails() now drives both
+  // the correspondences and correspondencesMessages tables from one call,
+  // gated on either FetchAction (see downloadAllData()) - only
+  // correspondencesMessages is passed here since that's the one whose
+  // cursor the combined sync actually reads/writes.
   Future<void> _refreshFromServer() async {
     final loginCtrl = Provider.of<LoginController>(context, listen: false);
     await loginCtrl.manualSync(context, onlyEntities: {
-      FetchAction.correspondences,
       FetchAction.correspondencesMessages,
     });
     await _loadData(init: true);
   }
 
   Future<void> _loadData({bool init = false, bool silent = false}) async {
-    // If we are already loading something heavy, ignore silent background requests
-    if (_isLoading || (!_hasMore && !init)) return;
+    // ✅ FIX (2026-11-25): this used to gate EVERY call (including init)
+    // behind `_isLoading`, so a fresh init - most importantly the silent,
+    // push-triggered refresh (_onDashboardUpdated()) - could be silently
+    // dropped with no retry if it happened to fire while an unrelated
+    // pagination fetch was still in flight. Confirmed live: a push arrived,
+    // saved the new thread+message to SQLite correctly (verified directly
+    // against the local DB), but the list never showed it because this
+    // guard swallowed the refresh outright. `_isLoading` should only ever
+    // block pagination (don't fetch the next page while already fetching,
+    // or once there's nothing left); a fresh init must always be allowed
+    // through.
+    if (!init && (_isLoading || !_hasMore)) return;
+
+    // Guards _items/_offset/_hasMore against a now-stale older request
+    // (most commonly an in-flight pagination fetch) landing and clobbering
+    // what a newer request - typically this same init - already wrote.
+    // Without this, allowing init to bypass the _isLoading gate above would
+    // just trade one race for another.
+    final int requestId = ++_loadRequestId;
 
     if (init) {
       if (!silent) {
@@ -263,36 +286,47 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
           .getDataRepository();
       if (repo == null) return;
 
+      final int requestOffset = _offset;
       final newItems = await repo.getCorrespondences(
         studentId: widget.studentId,
         searchQuery: widget.searchQuery,
         todayOnly: widget.todayOnly,
         unreadOnly: widget.unreadOnly,
         limit: init ? _firstLimit : _nextLimit,
-        offset: _offset,
+        offset: requestOffset,
       );
 
-      if (mounted) {
-        setState(() {
-          if (newItems.length < (init ? _firstLimit : _nextLimit)) {
-            _hasMore = false;
-          }
+      // A newer request (e.g. a fresh init superseding this exact
+      // pagination fetch) already landed and updated state - applying this
+      // stale result now would duplicate/misorder _items and corrupt the
+      // _offset math for whatever comes after it.
+      if (!mounted || requestId != _loadRequestId) return;
 
-          if (init) {
-            // ✅ If it was an init (even a silent one), completely replace the list
-            _items = newItems;
-          } else {
-            // Otherwise, we are paginating, so append to the bottom
-            _items.addAll(newItems);
-          }
+      setState(() {
+        if (newItems.length < (init ? _firstLimit : _nextLimit)) {
+          _hasMore = false;
+        }
 
-          _offset +=
-              newItems.length; // ✅ FIX: Increment by the actual number fetched!
-          if (!silent) _isLoading = false;
-        });
-      }
+        if (init) {
+          // ✅ If it was an init (even a silent one), completely replace the list
+          _items = newItems;
+        } else {
+          // Otherwise, we are paginating, so append to the bottom
+          _items.addAll(newItems);
+        }
+
+        _offset = requestOffset + newItems.length;
+        // Always clear once the latest request lands, regardless of which
+        // call originally set it - otherwise a silent init superseding a
+        // non-silent pagination fetch would leave _isLoading stuck true
+        // forever (that fetch's own result gets dropped as stale above, so
+        // it never reaches its own reset either).
+        _isLoading = false;
+      });
     } catch (e, stackTrace) {
-      if (mounted && !silent) setState(() => _isLoading = false);
+      if (mounted && requestId == _loadRequestId) {
+        setState(() => _isLoading = false);
+      }
       print("Error loading correspondences: $e, Stack: $stackTrace");
     }
   }

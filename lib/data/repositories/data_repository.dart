@@ -8,8 +8,7 @@ import 'package:bla_flutter_app/data/sources/api_client.dart';
 import 'package:bla_flutter_app/data/sources/remote/api_data_source_interface.dart';
 import 'package:bla_flutter_app/data/sources/remote/diaries_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/diaries_comments_source.dart';
-import 'package:bla_flutter_app/data/sources/remote/correspondences_source.dart';
-import 'package:bla_flutter_app/data/sources/remote/correspondences_messages_source.dart';
+import 'package:bla_flutter_app/data/sources/remote/correspondence_sync_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/contacts_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/classes_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/report_cards_list_source.dart';
@@ -21,6 +20,7 @@ import 'package:bla_flutter_app/models/user_model.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/models/diary_comments_model.dart';
 import 'package:bla_flutter_app/models/correspondence_model.dart';
+import 'package:bla_flutter_app/models/correspondence_message_model.dart';
 import 'package:bla_flutter_app/models/posi_api_queue_model.dart';
 import 'package:bla_flutter_app/models/report_card_list_model.dart';
 import 'package:bla_flutter_app/models/data_fetches_model.dart'; // ✅ Import
@@ -41,10 +41,13 @@ class DataRepository {
   final ApiDiariesDataSource _diaryDataSource = ApiDiariesDataSource();
   final ApiDiariesCommentsDataSource _diaryCommentsDataSource =
       ApiDiariesCommentsDataSource();
-  final ApiCorrespondencesDataSource _correspondenceDataSource =
-      ApiCorrespondencesDataSource();
-  final ApiCorrespondenceMessagesDataSource _correspondenceMessagesDataSource =
-      ApiCorrespondenceMessagesDataSource();
+  // ApiCorrespondencesDataSource/ApiCorrespondenceMessagesDataSource (the
+  // old two-endpoint sync) are superseded by the combined sync below, but
+  // deliberately left in lib/data/sources/remote/ as a rollback path -
+  // their backend endpoints (apiCorrespondenceList/apiCorrespondenceMessages)
+  // are likewise still live, unmodified.
+  final ApiCorrespondenceSyncDataSource _correspondenceSyncDataSource =
+      ApiCorrespondenceSyncDataSource();
   final ApiContactsDataSource _contactsDataSource = ApiContactsDataSource();
   final ApiClassesDataSource _classesDataSource =
       ApiClassesDataSource(); // ✅ Add this
@@ -114,39 +117,27 @@ class DataRepository {
       // syncEntity() call (FetchAction.diariesComments /
       // TableNames.diariesComments) if comments are ever re-enabled.
 
-      if (only == null || only.contains(FetchAction.correspondences)) {
-        success = await syncEntity(
+      // ✅ REPLACED (2026-11-25, correspondence sync optimization): the old
+      // two independent syncEntity() calls (FetchAction.correspondences on
+      // corr.created, FetchAction.correspondencesMessages on m.created) had
+      // a real gap - a reply to an existing thread never re-matched the
+      // thread-level cursor, so a thread's own preview/unread count could
+      // go stale even though its messages synced fine. One combined call
+      // now drives both tables off a single message.created cursor (see
+      // project_correspondence_sync_optimization_2026_11_25 memory) -
+      // reuses the existing FetchAction.correspondencesMessages cursor
+      // value directly (same column/semantics), so already-synced users
+      // get a normal incremental fetch here, not a full backlog refetch.
+      if (only == null ||
+          only.contains(FetchAction.correspondences) ||
+          only.contains(FetchAction.correspondencesMessages)) {
+        success = await syncCorrespondenceSyncDetails(
           cookies,
-          0,
-          1000,
-          _correspondenceDataSource,
-          FetchAction.correspondences,
-          TableNames.correspondences,
-          shouldDownloadJson: false,
-          shouldFetchInBatches: true,
           userId: userId,
           accessToken: accessToken,
         );
         if (!success) {
           throw Exception("Failure while syncing Correspondences");
-        }
-      }
-
-      if (only == null || only.contains(FetchAction.correspondencesMessages)) {
-        success = await syncEntity(
-          cookies,
-          0,
-          1000,
-          _correspondenceMessagesDataSource,
-          FetchAction.correspondencesMessages,
-          TableNames.correspondencesMessages,
-          shouldDownloadJson: false,
-          shouldFetchInBatches: true,
-          userId: userId,
-          accessToken: accessToken,
-        );
-        if (!success) {
-          throw Exception("Failure while syncing Correspondence Messages");
         }
       }
 
@@ -496,6 +487,82 @@ class DataRepository {
         //Inserting into user_data_fetches table
         // print("user_data_fetches row for $tableName: ${dataFetchModel.toMap()}");
 
+        await _sqLiteDB.insertOrUpdate(
+            TableNames.userDataFetches, dataFetchModel.toMap());
+      }
+
+      return true;
+    } catch (e, s) {
+      print("Data Repository: ${e.toString()} \n ${s.toString()}");
+      return false;
+    }
+  }
+
+  // Combined correspondence sync (2026-11-25) - apiCorrespondenceSync's
+  // response, like apiReportCard6Plus's, doesn't fit syncEntity()'s
+  // one-row-per-table model: one call returns both correspondences[] and
+  // messages[], cursored purely on message.created (see
+  // project_correspondence_sync_optimization_2026_11_25 memory for why a
+  // separate thread-level cursor was dropped). Reuses the existing
+  // FetchAction.correspondencesMessages cursor row directly - its stored
+  // value is already message.created-based, identical to what this query
+  // needs, so switching to this method costs already-synced users nothing
+  // (no backlog refetch), only new/incremental rows are fetched.
+  Future<bool> syncCorrespondenceSyncDetails(
+    String cookies, {
+    String? userId,
+    String? accessToken,
+  }) async {
+    try {
+      String? modifiedDate;
+      var entityRow = await _sqLiteDB.query(
+        TableNames.userDataFetches,
+        "action=?",
+        [FetchAction.correspondencesMessages.name],
+      );
+      if (entityRow.isNotEmpty) {
+        modifiedDate = DataFetchesModel.fromMap(entityRow.first).serverTimestamp;
+      }
+
+      downloadingStatusStreamController?.add("Downloading correspondences");
+      var result = await _correspondenceSyncDataSource.fetchCorrespondenceSync(
+        cookies: cookies,
+        modifiedDate: modifiedDate,
+        userId: userId,
+        accessToken: accessToken,
+      );
+
+      var correspondences = result['correspondences'] as List<CorrespondenceModel>;
+      var messages = result['messages'] as List<CorrespondenceMessageModel>;
+
+      downloadingStatusStreamController?.add("Saving correspondences to database");
+      if (correspondences.isNotEmpty) {
+        await _sqLiteDB.executeTransaction(
+          TableNames.correspondences,
+          correspondences.map((c) => c.toSQLLiteMap()).toList(),
+        );
+      }
+      if (messages.isNotEmpty) {
+        await _sqLiteDB.executeTransaction(
+          TableNames.correspondencesMessages,
+          messages.map((m) => m.toSQLLiteMap()).toList(),
+        );
+      }
+
+      // The cursor must advance even when only messages (no new threads)
+      // came back - a reply to an existing thread is exactly the case the
+      // old two-cursor design used to miss (see memory). Only messages[]
+      // is guaranteed non-empty whenever anything changed at all, since
+      // every correspondences[] entry is itself backed by a message row.
+      if (messages.isNotEmpty) {
+        String latestDateStr = getLatestModifiedDateString(messages);
+        var dataFetchModel = DataFetchesModel(
+          username: _sqLiteDB.dbName,
+          action: FetchAction.correspondencesMessages,
+          serverTimestamp: latestDateStr.isNotEmpty ? latestDateStr : (modifiedDate ?? ''),
+          numRowsFetched: messages.length,
+          lastID: messages.last.modelId,
+        );
         await _sqLiteDB.insertOrUpdate(
             TableNames.userDataFetches, dataFetchModel.toMap());
       }
