@@ -83,14 +83,15 @@ class _DashboardState extends State<DashboardScreen> {
               _buildMenuCard(
                 title: "Report Cards",
                 subtitle: "View grades",
-                // TODO: placeholder - Diary/Correspondence use detailed
-                // hand-illustrated artwork (gradients, shading, a 3D pen),
-                // not something reproducible by hand-writing SVG at a
-                // matching fidelity. Using a plain Material icon instead of
-                // either duplicating Diary's icon or shipping a visibly
-                // cruder attempt - swap for a real illustrated asset
-                // matching the other two before this ships.
-                icon: Icons.grading_rounded,
+                // TODO: still a placeholder (a hand-drawn graph-with-axes,
+                // not the hand-illustrated artwork Diary/Correspondence use
+                // - gradients, shading, a 3D pen) - swap for a real
+                // illustrated asset matching the other two before this
+                // ships. Custom-painted rather than a built-in Material
+                // icon so it actually shows axis lines, per Samee's
+                // explicit ask (2026-11-25) after Icons.leaderboard's bars
+                // read as floating with no axes.
+                customIcon: const _ReportCardsGraphIcon(),
                 routeName: '/report-cards',
                 badgeCount: ctrl.unreadReportCards,
               ),
@@ -109,11 +110,12 @@ class _DashboardState extends State<DashboardScreen> {
     required String subtitle,
     String? imgPath,
     IconData? icon,
+    Widget? customIcon,
     required String routeName,
     int badgeCount = 0,
   }) {
-    assert(imgPath != null || icon != null,
-        '_buildMenuCard needs either imgPath or icon');
+    assert(imgPath != null || icon != null || customIcon != null,
+        '_buildMenuCard needs an imgPath, icon, or customIcon');
     return Expanded(
       child: InkWell(
         onTap: () => Navigator.pushNamed(context, routeName),
@@ -139,9 +141,10 @@ class _DashboardState extends State<DashboardScreen> {
                       ),
                     ),
                     padding: const EdgeInsets.all(20.0),
-                    child: icon != null
-                        ? Icon(icon, color: goldAccent, size: 56)
-                        : Image.asset(imgPath!, fit: BoxFit.contain),
+                    child: customIcon ??
+                        (icon != null
+                            ? Icon(icon, color: goldAccent, size: 56)
+                            : Image.asset(imgPath!, fit: BoxFit.contain)),
                   ),
                   Container(
                     color: Colors.white,
@@ -215,4 +218,68 @@ class _DashboardState extends State<DashboardScreen> {
       ),
     );
   }
+}
+
+// ✅ Report Cards dashboard icon (2026-11-25) - a real axes+bars graph,
+// custom-painted rather than a built-in Material icon (Icons.leaderboard's
+// bars read as floating with no axes, which didn't match what Samee asked
+// for specifically). Still a placeholder relative to Diary/Correspondence's
+// hand-illustrated artwork - see the TODO at this widget's call site.
+class _ReportCardsGraphIcon extends StatelessWidget {
+  const _ReportCardsGraphIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: SizedBox(
+        width: 56,
+        height: 56,
+        child: CustomPaint(painter: _GraphIconPainter()),
+      ),
+    );
+  }
+}
+
+class _GraphIconPainter extends CustomPainter {
+  const _GraphIconPainter();
+
+  static const Color goldAccent = Color(0xFFFFC107);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final axisPaint = Paint()
+      ..color = goldAccent
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    final barPaint = Paint()..color = goldAccent;
+
+    const double originX = 7;
+    const double originY = 48;
+    const double axisTopY = 4;
+    const double axisRightX = 52;
+
+    // Axis lines (the "L" the bars sit inside).
+    canvas.drawLine(
+        const Offset(originX, axisTopY), const Offset(originX, originY), axisPaint);
+    canvas.drawLine(
+        const Offset(originX, originY), const Offset(axisRightX, originY), axisPaint);
+
+    // Three ascending bars, left to right.
+    const double barWidth = 9;
+    const double gap = 5;
+    final heights = [14.0, 24.0, 34.0];
+    double x = originX + gap;
+    for (final barHeight in heights) {
+      final rect = RRect.fromRectAndCorners(
+        Rect.fromLTWH(x, originY - barHeight, barWidth, barHeight),
+        topLeft: const Radius.circular(1.5),
+        topRight: const Radius.circular(1.5),
+      );
+      canvas.drawRRect(rect, barPaint);
+      x += barWidth + gap;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GraphIconPainter oldDelegate) => false;
 }
