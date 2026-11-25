@@ -4,6 +4,7 @@ import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/models/user_model.dart';
 import 'package:bla_flutter_app/themes/constants.dart';
 import 'package:bla_flutter_app/components/app_header.dart';
+import 'package:bla_flutter_app/utils/helpers.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -25,34 +26,105 @@ class _CorrespondenceDetailsScreenState
   List<Map<String, dynamic>> _messages = [];
   bool _isLoading = true;
   UserModel? _currentUser;
+  DashboardController? _dashCtrl;
 
   @override
   void initState() {
     super.initState();
     _currentUser = Provider.of<LoginController>(context, listen: false).getUser;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadMessages();
-    });
+    // ✅ FIX (2026-11-19): was reloading messages (and auto-scrolling to the
+    // bottom) as a side effect inside build()'s Consumer<DashboardController>
+    // builder - which reruns on EVERY DashboardController notification
+    // (badge updates, unrelated syncs, any push arrival), not just a new
+    // message in THIS thread. That meant any time the user scrolled up to
+    // read an earlier message, the next unrelated notification yanked them
+    // straight back to the bottom within ~100ms - confirmed live via a real
+    // parent's own message in this exact feature, weeks old: "miss, could
+    // you please send the message in two parts? I'm unable to scroll up and
+    // read the complete message on the app." Listening directly (same
+    // pattern already used in correspondence.dart's _onDashboardUpdated)
+    // decouples the reload from build() entirely - it now only ever fires
+    // on a real DashboardController update, and _loadMessages() itself only
+    // auto-scrolls on the very first load or when the message count
+    // actually increased, never on an unrelated refresh of the same data.
+    _dashCtrl = Provider.of<DashboardController>(context, listen: false);
+    _dashCtrl?.addListener(_onDashboardUpdated);
+
+    // ✅ FIX (2026-11-19): was wrapped in addPostFrameCallback, which waits
+    // until after the FIRST frame renders before loading - confirmed live
+    // that this leaves the screen blank (title/buttons render, but the
+    // message list stays empty) until any tap forces a repaint, on a fresh
+    // app launch straight into this screen. The old code never hit this
+    // because its (now-removed) redundant build()-time microtask fired via
+    // Future.microtask(), which resolves within the SAME event loop turn -
+    // well before the first frame even finishes - landing its setState()
+    // inside the normal pre-first-frame pipeline instead of after it.
+    // Calling this directly matches the already-working pattern used by
+    // correspondence.dart's list screen and diary.dart's list tab, neither
+    // of which wrap their own initial load in addPostFrameCallback.
+    _loadMessages(isInitialLoad: true);
+  }
+
+  void _onDashboardUpdated() {
+    if (mounted) _loadMessages();
   }
 
   @override
   void dispose() {
-    // Cleaned up the dbSubscription, no longer needed!
+    _dashCtrl?.removeListener(_onDashboardUpdated);
     _scrollController.dispose();
     _replyController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadMessages() async {
+  Future<void> _loadMessages({bool isInitialLoad = false}) async {
     final loginCtrl = Provider.of<LoginController>(context, listen: false);
     final repo = loginCtrl.getDataRepository();
     if (repo != null) {
       final msgs = await repo.getCorrespondenceMessages(widget.item.id);
+      final hasNewMessages = msgs.length > _messages.length;
       if (mounted) {
         setState(() {
           _messages = msgs;
           _isLoading = false;
+        });
+        // ✅ FIX (2026-11-19): confirmed live that setState() here can mark
+        // the Element dirty without an actual frame getting pumped to the
+        // screen - the data was correct and already in _messages, but the
+        // list stayed visually blank until some unrelated gesture (any tap)
+        // forced a frame. Reproduced specifically on a fresh cold start
+        // straight into this screen (Dashboard -> Correspondence list ->
+        // this detail screen) - this async setState() lands right as the
+        // push-route transition animation has just gone fully idle.
+        // ensureVisualUpdate() explicitly requests a frame instead of
+        // relying on that implicit scheduling.
+        WidgetsBinding.instance.ensureVisualUpdate();
+      }
+
+      // ✅ FIX (2026-11-19): only auto-scroll on the first load or when a
+      // genuinely new message arrived - see the comment on initState()
+      // above for the full reasoning. A silent refresh that didn't add any
+      // message (e.g. an unrelated badge-count update) no longer moves the
+      // scroll position at all.
+      if ((isInitialLoad || hasNewMessages) && mounted) {
+        // ✅ FIX (2026-11-19): was a raw 100ms Future.delayed() before
+        // reading maxScrollExtent - confirmed live this can fire before the
+        // lazy ListView.builder has actually laid out its newly-added items,
+        // so maxScrollExtent reports a smaller-than-true value: only the
+        // last message ended up visible, with the rest of the (correctly
+        // loaded) conversation rendering as blank space above it.
+        // addPostFrameCallback guarantees a real frame has already been
+        // laid out with the new _messages before this reads the scroll
+        // position, so maxScrollExtent is accurate.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
         });
       }
 
@@ -119,50 +191,85 @@ class _CorrespondenceDetailsScreenState
       }
 
       _replyController.clear();
+      // ✅ FIX (2026-11-19): removed the explicit auto-scroll that used to
+      // be here - _loadMessages() now already scrolls to the bottom
+      // whenever the message count increases (which sending one always
+      // does), so this was just firing a second, redundant animateTo to
+      // the same position right after the one _loadMessages() already
+      // triggers.
       await _loadMessages();
+    }
+  }
 
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
-      });
+  Future<void> _closeConversation() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text("Close Conversation"),
+        content: const Text(
+            "Are you sure you want to close this conversation? Neither side will be able to send or view further messages here."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text("Close Conversation",
+                style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final loginCtrl = Provider.of<LoginController>(context, listen: false);
+    final repo = loginCtrl.getDataRepository();
+    if (repo == null) return;
+
+    try {
+      await repo.closeCorrespondence(
+        widget.item.id,
+        authService: loginCtrl.authService,
+      );
+      widget.item.dateEnded =
+          DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Conversation closed.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Failed to close conversation. Check your connection and try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // 1. WRAP IN CONSUMER
+    // Kept only to read dashboardCtrl.totalUnread for the header badge -
+    // reloading messages is now handled by the _dashCtrl listener in
+    // initState()/_onDashboardUpdated(), not as a side effect of build().
     return Consumer<DashboardController>(
       builder: (context, dashboardCtrl, child) {
-        // Reload on every dashboard update, not just when the aggregate
-        // total happens to change. numUnreadMessages/bRead can update
-        // without moving the global total (e.g. this thread was already
-        // unread), which previously meant messages after the first one
-        // silently stopped appearing until the screen was reopened.
-        Future.microtask(() async {
-          await _loadMessages();
-
-          // Auto-scroll to show the new message
-          Future.delayed(const Duration(milliseconds: 100), () {
-            if (_scrollController.hasClients) {
-              _scrollController.animateTo(
-                _scrollController.position.maxScrollExtent,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-              );
-            }
-          });
-        });
         return Scaffold(
           appBar: AppHeader(
-            // Lowercased: subjects are often typed in all-caps by senders,
+            // Title-cased: subjects are often typed in all-caps by senders,
             // which takes up more header width at the same font size and
-            // was getting truncated - lowercase reads just as well and fits.
-            title: widget.item.subject?.toLowerCase() ?? "Conversation",
+            // was getting truncated - title case still reads properly
+            // (unlike all-lowercase) while taking noticeably less width
+            // than the original all-caps.
+            title: widget.item.subject != null
+                ? toTitleCase(widget.item.subject!)
+                : "Conversation",
             showBackButton: true,
             backgroundColor: AppColors.purplePrimary,
             // 2. PASS THE COUNT
@@ -203,6 +310,24 @@ class _CorrespondenceDetailsScreenState
                           ? const Center(child: CircularProgressIndicator())
                           : ListView.builder(
                               controller: _scrollController, // ✅ Attach here
+                              // ✅ FIX (2026-11-19): ListView.builder normally
+                              // only lays out items near the current
+                              // viewport, so right after loading a long
+                              // thread's messages, maxScrollExtent is just an
+                              // estimate from whatever few items happen to be
+                              // built - confirmed live that animateTo() using
+                              // that estimate can jump past everything that's
+                              // actually been laid out, leaving the screen
+                              // blank except for whichever single item
+                              // happened to already be built. A correspondence
+                              // thread is at most a few dozen short text
+                              // bubbles, so building all of them eagerly
+                              // (rather than Flutter's default lazy ~250px
+                              // cache window) is cheap and guarantees an
+                              // accurate scroll extent the first time it's
+                              // read, instead of chasing the estimate across
+                              // multiple frames.
+                              cacheExtent: double.infinity,
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 16),
                               itemCount: _messages.length,
@@ -219,40 +344,53 @@ class _CorrespondenceDetailsScreenState
 
                                 return _buildMessageTile(
                                   message: msg['message'] ?? "",
-                                  // ✅ Bulletproof date fallback:
-                                  date: msg['modifiedDate'] != null
-                                      ? msg['modifiedDate']
-                                      : msg['date'] ?? msg['createdDate'] ?? "",
+                                  // ✅ FIX (2026-11-22): was preferring
+                                  // modifiedDate - that field's only real
+                                  // purpose is the sync cursor (see
+                                  // DataRepository.getLatestModifiedDateString()),
+                                  // and until today it happened to display
+                                  // correctly only because the model used to
+                                  // (wrongly) local-convert it before storing
+                                  // it, which also silently broke the cursor
+                                  // (see correspondence_message_model.dart's
+                                  // fix). Now that it's correctly raw/UTC,
+                                  // preferring it here would show message
+                                  // times ~5h behind. `date`/`createdDate`
+                                  // are already server-formatted for display
+                                  // and were never part of that bug.
+                                  date: msg['date'] ?? msg['createdDate'] ?? "",
                                   isMe: isMe,
                                 );
                               },
                             ),
                     ),
 
-                    // 3. Close Button
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16.0, vertical: 8.0),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton(
-                          onPressed: () {
-                            // Add Close Logic Here
-                          },
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(
-                                color: AppColors.purplePrimary),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(4)),
+                    // 3. Close Button - hidden once the conversation is
+                    // already closed, since there's no reopen affordance in
+                    // this UI yet.
+                    if (!widget.item.isClosed)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16.0, vertical: 8.0),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _closeConversation,
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(
+                                  color: AppColors.purplePrimary),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4)),
+                            ),
+                            child: const Text("CLOSE CONVERSATION",
+                                style: TextStyle(
+                                    color: AppColors.purplePrimary,
+                                    letterSpacing: 1.2)),
                           ),
-                          child: const Text("CLOSE CONVERSATION",
-                              style: TextStyle(
-                                  color: AppColors.purplePrimary,
-                                  letterSpacing: 1.2)),
                         ),
                       ),
-                    ),
 
                     // 4. Input Area
                     _buildReplyInput(),
@@ -302,11 +440,15 @@ class _CorrespondenceDetailsScreenState
               borderRadius: BorderRadius.circular(8),
             ),
             constraints: const BoxConstraints(maxWidth: 300),
-            child: Text(
-              message,
-              style: TextStyle(
-                color: isMe ? Colors.white : Colors.black87,
-                fontSize: 15,
+            child: Text.rich(
+              linkifyPlainText(
+                message,
+                style: TextStyle(
+                  color: isMe ? Colors.white : Colors.black87,
+                  fontSize: 15,
+                ),
+                // Default blue reads poorly on the purple "isMe" bubble.
+                linkColor: isMe ? Colors.yellow.shade100 : Colors.blue,
               ),
             ),
           ),
@@ -316,6 +458,23 @@ class _CorrespondenceDetailsScreenState
   }
 
   Widget _buildReplyInput() {
+    if (widget.item.isClosed) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          border: Border(top: BorderSide(color: Colors.grey.shade300)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.lock_outline, color: Colors.grey.shade600, size: 18),
+            const SizedBox(width: 8),
+            Text("This conversation is closed",
+                style: TextStyle(color: Colors.grey.shade600)),
+          ],
+        ),
+      );
+    }
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(

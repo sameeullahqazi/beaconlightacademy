@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:bla_flutter_app/constants/storage_strings.dart';
 import 'package:bla_flutter_app/data/repositories/data_repository.dart';
 import 'package:bla_flutter_app/db/sqlite.dart';
+import 'package:bla_flutter_app/models/data_fetches_model.dart';
 import 'package:bla_flutter_app/models/user_model.dart';
 import 'package:bla_flutter_app/services/auth_service.dart';
 import 'package:bla_flutter_app/services/sercure_storage_service.dart';
@@ -37,6 +38,9 @@ class DataSyncService {
     String password, {
     int? postAPIQueueId,
     Function? callback,
+    // ✅ NEW (2026-11-22): see downloadAllData()'s `only` param - threaded
+    // through unchanged so a scoped pull-to-refresh can reach it.
+    Set<FetchAction>? onlyEntities,
   }) async {
     _syncTimer?.cancel();
 
@@ -52,6 +56,7 @@ class DataSyncService {
       password,
       postAPIQueueId: postAPIQueueId,
       callback: callback,
+      onlyEntities: onlyEntities,
     );
 
     //Periodic syncing timer activation
@@ -98,10 +103,20 @@ class DataSyncService {
     String username,
     String password, {
     int? postAPIQueueId,
+    Set<FetchAction>? onlyEntities,
     Function? callback,
   }) async {
-    checkInternetAvailability().then((isInternetAvailable) async {
-      if (isInternetAvailable) {
+    // ✅ FIX (2026-11-13): was `checkInternetAvailability().then(...)` with
+    // neither `await` nor `return` - the detached .then() callback (all the
+    // real sync work below) ran on its own, while this `async` function's
+    // own Future resolved almost immediately, right after kicking it off.
+    // Every caller `await`s syncData() expecting it to mean "the sync is
+    // done" (manualSync()'s "Sync complete!" snackbar, and - starting today
+    // - Diary/Correspondence pull-to-refresh, which needs to know when real
+    // data has actually landed before reloading the local list). Awaiting
+    // this directly instead of chaining .then() makes that true.
+    final isInternetAvailable = await checkInternetAvailability();
+    if (isInternetAvailable) {
         _setState(SyncState.syncing);
         UserModel? user;
         var storedUserData = await SecureStorageService.instance
@@ -109,6 +124,40 @@ class DataSyncService {
         if (storedUserData != null) {
           user = UserModel.fromMap(jsonDecode(storedUserData));
           // print("syncData() - storedUser from secure storage: ${storedUserData.toString()}");
+
+          // Phase 2 (v9 security): the cached accessToken above was minted
+          // at whatever earlier login issued it, and now expires after
+          // 24h - reusing it as-is here would start throwing 401s on
+          // every sync call for any session older than that. Silently
+          // exchange the stored refresh token for a guaranteed-fresh one
+          // first; fall back to a full password login (same as the "no
+          // cached user" branch below) only if that fails, e.g. no refresh
+          // token was ever stored, or it was revoked by a password change
+          // elsewhere.
+          var storedRefreshToken = await SecureStorageService.instance
+              .read(key: StorageStringsConstants.refreshTokenKey(username));
+          var refreshed = storedRefreshToken != null &&
+              await authService.refreshAccessToken(storedRefreshToken);
+          if (refreshed) {
+            user.accessToken = authService.accessToken;
+            await SecureStorageService.instance.write(
+              key: StorageStringsConstants.refreshTokenKey(username),
+              value: authService.refreshToken!,
+            );
+          } else {
+            var freshUser = await authService.login(username, password);
+            if (freshUser != null) {
+              user = freshUser;
+              await SecureStorageService.instance.write(
+                key: StorageStringsConstants.refreshTokenKey(username),
+                value: authService.refreshToken!,
+              );
+            }
+            // else: fall through using the cached (possibly now-expired)
+            // user as-is, same as today's offline/unreachable behavior -
+            // downloadAllData() below will surface a sync error rather
+            // than silently losing the user's session here.
+          }
         } else {
           print("syncData() - No stored user data found in secure storage.");
           user = await authService.login(username, password);
@@ -150,6 +199,7 @@ class DataSyncService {
             userId: user.id,
             // accessToken: authService.accessToken!,
             accessToken: user.accessToken!,
+            only: onlyEntities,
           );
 
           if (!success) {
@@ -170,7 +220,6 @@ class DataSyncService {
       if (callback != null) {
         callback();
       }
-    });
   }
 
   static String getSyncStateMessage(SyncState state) {

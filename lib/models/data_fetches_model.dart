@@ -110,4 +110,7 @@ enum FetchAction {
   users,
   contacts,
   classes,
+  reportCardsList,
+  reportCard6Plus,
+  reportCardNur5,
 }

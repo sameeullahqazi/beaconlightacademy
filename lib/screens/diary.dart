@@ -9,6 +9,7 @@ import 'package:bla_flutter_app/components/app_header.dart';
 import 'package:bla_flutter_app/components/app_footer.dart';
 import 'package:bla_flutter_app/components/searchable_picker_sheet.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
+import 'package:bla_flutter_app/models/data_fetches_model.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
@@ -97,10 +98,17 @@ class _DiaryScreenState extends State<DiaryScreen> {
         final classes = await repo.getClasses();
         if (mounted) {
           setState(() {
-            _classes = classes;
-            if (_classes.isNotEmpty) {
-              _selectedClassId = _classes.first['id'];
-            }
+            // ✅ "All Classes" option, defaulted to - staff previously had no
+            // way to see unread items across every class at once and had to
+            // guess which class held them, one at a time. '' as its id
+            // works with no backend/query change: getUnreadDiaryCount()/
+            // getDiaries() already treat an empty classId exactly like a
+            // null one (no class filter applied).
+            _classes = [
+              {'id': '', 'className': 'All Classes'},
+              ...classes,
+            ];
+            _selectedClassId = _classes.first['id'];
           });
           _updateBadgeCounts();
         }
@@ -533,37 +541,84 @@ class _DiaryListTabState extends State<DiaryListTab> {
     }
   }
 
+  // ✅ NEW (2026-11-13): pull-to-refresh used to only reload from local
+  // SQLite (_loadData() -> repo.getDiaries(), never touches the server).
+  // Given Finding B (a normal cold start/resume triggers NO real sync at
+  // all - see bug_push_delivery_confirmation_gap_2026_11_05 memory), this
+  // was the one thing a parent could reliably do that still didn't actually
+  // fetch anything new. Now does a real sync first (same manualSync() the
+  // footer's Refresh button uses, including its 60s cooldown/snackbars),
+  // then reloads the local list so it reflects whatever that sync fetched.
+  //
+  // ✅ NEW (2026-11-22, design-flaws-and-changes doc): scoped to just
+  // FetchAction.diaries - pulling to refresh on the Diary screen has no
+  // reason to also re-sync correspondences/contacts/classes/report cards
+  // every time. Samee's explicit design call: partial per-screen syncs
+  // instead of the full 8-entity downloadAllData() for every trigger.
+  Future<void> _refreshFromServer() async {
+    final loginCtrl = Provider.of<LoginController>(context, listen: false);
+    await loginCtrl.manualSync(context, onlyEntities: {FetchAction.diaries});
+    await _loadData(init: true);
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_items.isEmpty && _isLoading)
-      return const Center(child: CircularProgressIndicator());
-    if (_items.isEmpty && !_isLoading)
-      return const Center(child: Text("No entries found."));
-
+    // ✅ FIX (2026-11-22): the empty/loading states used to return a bare
+    // Center() completely outside RefreshIndicator/ListView, so a parent
+    // whose local data is genuinely empty (e.g. the no-automatic-real-sync
+    // gap tracked in bug_push_delivery_confirmation_gap_2026_11_05 -
+    // Finding B) had no way to pull-to-refresh at all - the one gesture a
+    // frustrated user would try first did nothing, with only the footer
+    // Refresh button or a full logout/login left as a way out. Both states
+    // now render inside the same RefreshIndicator as the populated list.
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(
         dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse},
       ),
       child: RefreshIndicator(
-        onRefresh: () async => await _loadData(init: true),
-        child: ListView.builder(
-          controller: _scrollController,
-          itemCount: _items.length + (_hasMore ? 1 : 0),
-          itemBuilder: (ctx, index) {
-            if (index == _items.length) {
-              return const Center(
-                  child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: CircularProgressIndicator()));
-            }
-            return Column(
-              children: [
-                _buildItem(_items[index], index),
-                Divider(height: 1, thickness: 1, color: Colors.grey.shade200),
-              ],
-            );
-          },
-        ),
+        onRefresh: _refreshFromServer,
+        child: _items.isEmpty
+            ? ListView(
+                // ✅ FIX: AlwaysScrollableScrollPhysics so the pull gesture
+                // still works even though a single centered message never
+                // overflows the viewport on its own.
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.7,
+                    child: Center(
+                      child: _isLoading
+                          ? const CircularProgressIndicator()
+                          : const Text("No entries found."),
+                    ),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                // ✅ FIX: see correspondence.dart's identical comment - a
+                // short, fully-loaded list that doesn't overflow the
+                // viewport needs this too, not just the empty case above.
+                physics: const AlwaysScrollableScrollPhysics(),
+                controller: _scrollController,
+                itemCount: _items.length + (_hasMore ? 1 : 0),
+                itemBuilder: (ctx, index) {
+                  if (index == _items.length) {
+                    return const Center(
+                        child: Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: CircularProgressIndicator()));
+                  }
+                  return Column(
+                    children: [
+                      _buildItem(_items[index], index),
+                      Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Colors.grey.shade200),
+                    ],
+                  );
+                },
+              ),
       ),
     );
   }

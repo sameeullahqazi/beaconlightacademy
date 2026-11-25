@@ -11,6 +11,7 @@ import 'package:bla_flutter_app/components/app_footer.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
+import 'package:bla_flutter_app/models/data_fetches_model.dart';
 
 // --- PART 1: THE MAIN SCREEN SHELL ---
 class CorrespondenceScreen extends StatefulWidget {
@@ -218,6 +219,27 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     super.dispose();
   }
 
+  // ✅ NEW (2026-11-13): same fix as Diary's pull-to-refresh - this used to
+  // only reload from local SQLite, never touching the server. Now does a
+  // real sync first (the same manualSync() the footer's Refresh button
+  // uses), then reloads the local list. See diary.dart's identical
+  // _refreshFromServer() for the full reasoning.
+  //
+  // ✅ NEW (2026-11-22, design-flaws-and-changes doc): scoped to just
+  // FetchAction.correspondences + correspondencesMessages - matches
+  // diary.dart's identical scoping. A thread's own preview/unread count
+  // lives on the correspondences row while its messages live separately,
+  // so both are needed; nothing else on this screen depends on diaries/
+  // contacts/classes/report cards.
+  Future<void> _refreshFromServer() async {
+    final loginCtrl = Provider.of<LoginController>(context, listen: false);
+    await loginCtrl.manualSync(context, onlyEntities: {
+      FetchAction.correspondences,
+      FetchAction.correspondencesMessages,
+    });
+    await _loadData(init: true);
+  }
+
   Future<void> _loadData({bool init = false, bool silent = false}) async {
     // If we are already loading something heavy, ignore silent background requests
     if (_isLoading || (!_hasMore && !init)) return;
@@ -277,38 +299,56 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
 
   @override
   Widget build(BuildContext context) {
-    if (_items.isEmpty && _isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_items.isEmpty && !_isLoading) {
-      return const Center(child: Text("No messages found."));
-    }
-
+    // ✅ FIX (2026-11-22): see diary.dart's identical fix/comment - the
+    // empty/loading states used to return a bare Center() completely
+    // outside RefreshIndicator/ListView, leaving a parent with a genuinely
+    // empty local correspondence list no way to pull-to-refresh at all.
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(
         dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse},
       ),
       child: RefreshIndicator(
-        onRefresh: () async {
-          await _loadData(init: true);
-        },
-        child: ListView.separated(
-          controller: _scrollController,
-          padding:
-              const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 80),
-          itemCount: _items.length + (_hasMore ? 1 : 0),
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (ctx, index) {
-            if (index == _items.length) {
-              return const Center(
-                  child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: CircularProgressIndicator()));
-            }
-            return _buildCorrespondenceItem(_items[index]);
-          },
-        ),
+        onRefresh: _refreshFromServer,
+        child: _items.isEmpty
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.7,
+                    child: Center(
+                      child: _isLoading
+                          ? const CircularProgressIndicator()
+                          : const Text("No messages found."),
+                    ),
+                  ),
+                ],
+              )
+            : ListView.separated(
+                // ✅ FIX (2026-11-22): RefreshIndicator needs the scrollable
+                // it wraps to always allow a pull gesture, even when there
+                // isn't enough content to overflow the viewport (e.g. a
+                // parent with only a handful of short correspondence
+                // threads) - without this, the list has nothing to
+                // overscroll and pull-to-refresh silently never fires.
+                // diary.dart's list has never hit this in practice only
+                // because it typically has enough rows to already fill the
+                // screen, not because it was deliberately exempted.
+                physics: const AlwaysScrollableScrollPhysics(),
+                controller: _scrollController,
+                padding: const EdgeInsets.only(
+                    left: 16, right: 16, top: 16, bottom: 80),
+                itemCount: _items.length + (_hasMore ? 1 : 0),
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (ctx, index) {
+                  if (index == _items.length) {
+                    return const Center(
+                        child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: CircularProgressIndicator()));
+                  }
+                  return _buildCorrespondenceItem(_items[index]);
+                },
+              ),
       ),
     );
   }
@@ -339,6 +379,7 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
   Widget _buildCorrespondenceItem(CorrespondenceModel item) {
     // Determine background highlight
     final bool isUnread = item.bRead == 0;
+    final bool isClosed = item.isClosed;
 
     // Parse initials safely
     String initials = "??";
@@ -347,38 +388,45 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
     }
 
     return InkWell(
-      onTap: () {
-        if (isUnread) {
-          final loginCtrl =
-              Provider.of<LoginController>(context, listen: false);
-          final repo = loginCtrl.getDataRepository();
-          repo
-              ?.markCorrespondenceAsRead(
-                item.id,
-                authService: loginCtrl.authService,
-                userId: loginCtrl.getUser?.id,
-              )
-              .catchError((e) {
-            print("Background read sync failed: $e");
-          });
-          if (context.mounted) {
-            Provider.of<DashboardController>(context, listen: false)
-                .refreshCounts();
-          }
-        }
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => CorrespondenceDetailsScreen(item: item),
-          ),
-        ).then((_) {
-          // 🚀 THE SPEED FIX: Silently reload so the blue "unread" background
-          // disappears instantly without flashing a loading spinner!
-          _loadData(init: true, silent: true);
-        });
-      },
+      // ✅ A closed correspondence can't be opened at all - null disables
+      // both the tap and InkWell's own ripple feedback, matching "cannot be
+      // clicked to view its messages".
+      onTap: isClosed
+          ? null
+          : () {
+              if (isUnread) {
+                final loginCtrl =
+                    Provider.of<LoginController>(context, listen: false);
+                final repo = loginCtrl.getDataRepository();
+                repo
+                    ?.markCorrespondenceAsRead(
+                      item.id,
+                      authService: loginCtrl.authService,
+                      userId: loginCtrl.getUser?.id,
+                    )
+                    .catchError((e) {
+                  print("Background read sync failed: $e");
+                });
+                if (context.mounted) {
+                  Provider.of<DashboardController>(context, listen: false)
+                      .refreshCounts();
+                }
+              }
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => CorrespondenceDetailsScreen(item: item),
+                ),
+              ).then((_) {
+                // 🚀 THE SPEED FIX: Silently reload so the blue "unread" background
+                // disappears instantly without flashing a loading spinner!
+                _loadData(init: true, silent: true);
+              });
+            },
       child: Container(
-        color: isUnread ? Colors.blue.shade50 : Colors.white,
+        color: isClosed
+            ? Colors.grey.shade100
+            : (isUnread ? Colors.blue.shade50 : Colors.white),
         padding: const EdgeInsets.symmetric(
             vertical: 16, horizontal: 8), // Increased vertical padding slightly
         child: Row(
@@ -440,8 +488,10 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
                       Expanded(
                         child: Text(
                           item.subject ?? "Message",
-                          style: const TextStyle(
-                            color: AppColors.purplePrimary,
+                          style: TextStyle(
+                            color: isClosed
+                                ? Colors.grey.shade500
+                                : AppColors.purplePrimary,
                             fontWeight: FontWeight.bold,
                             fontSize: 16,
                           ),
@@ -455,25 +505,50 @@ class _CorrespondenceListState extends State<CorrespondenceList> {
                       // item.date is "EEE, dd/MM/yyyy hh:mm:ss a"; the first
                       // two space-separated tokens are the weekday+date
                       // regardless of whether a time portion follows.
-                      Text(
-                        _displayDate(item),
-                        style: TextStyle(
-                            color: Colors.grey.shade600, fontSize: 12),
-                      ),
+                      if (isClosed)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade300,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            "CLOSED",
+                            style: TextStyle(
+                              color: Colors.grey.shade700,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        )
+                      else
+                        Text(
+                          _displayDate(item),
+                          style: TextStyle(
+                              color: Colors.grey.shade600, fontSize: 12),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 4),
                   Text(
                     item.studentName ?? item.senderName ?? "Unknown Sender",
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w600, color: Colors.black87),
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: isClosed
+                            ? Colors.grey.shade500
+                            : Colors.black87),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     item.message ?? "",
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: Colors.grey.shade600),
+                    style: TextStyle(
+                        color: isClosed
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade600),
                   ),
                 ],
               ),

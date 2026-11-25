@@ -111,6 +111,16 @@ class CorrespondenceModel implements BaseModel {
   @override
   String get modelId => id;
 
+  // ✅ FIX (2026-11-22): modifiedDate is raw/UTC (matches
+  // getAPICorrespondenceList()'s modifiedDate column after today's
+  // server-side fix - see API.class.php). correspondence.dart's
+  // _displayDate() compares this against DateTime.now() (local) to decide
+  // whether to show "Today" - a naive parse with no timezone marker reads
+  // the UTC numbers as if they were already local, off by the timezone
+  // offset. Appending 'Z' (same trick as utils/helpers.dart's
+  // utcToLocal()) tells Dart to interpret it as UTC before .toLocal()
+  // converts it for a correct local-vs-local comparison.
   @override
-  DateTime get modDate => DateTime.tryParse(modifiedDate) ?? DateTime.now();
+  DateTime get modDate =>
+      DateTime.tryParse("${modifiedDate}Z")?.toLocal() ?? DateTime.now();
 }

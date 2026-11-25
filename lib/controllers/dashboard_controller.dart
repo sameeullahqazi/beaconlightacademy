@@ -13,6 +13,13 @@ class DashboardController with ChangeNotifier {
   String? _selectedStudentId;
   int _unreadDiaries = 0;
   int _unreadCorrespondences = 0;
+  int _unreadReportCards = 0;
+  // Per-student unread totals (diary + correspondence + report card),
+  // regardless of the currently selected student filter above - drives the
+  // header's kids-menu badges, which need to show each child's own state
+  // independent of which one happens to be selected right now.
+  Map<String, int> _unreadByStudent = {};
+  int _totalUnreadAllStudents = 0;
 
   bool _isDisposed = false;
   StreamSubscription? _syncSubscription; // Subscription handle
@@ -21,7 +28,11 @@ class DashboardController with ChangeNotifier {
   String? get selectedStudentId => _selectedStudentId;
   int get unreadDiaries => _unreadDiaries;
   int get unreadCorrespondences => _unreadCorrespondences;
-  int get totalUnread => _unreadDiaries + _unreadCorrespondences;
+  int get unreadReportCards => _unreadReportCards;
+  int get totalUnread =>
+      _unreadDiaries + _unreadCorrespondences + _unreadReportCards;
+  Map<String, int> get unreadByStudent => _unreadByStudent;
+  int get totalUnreadAllStudents => _totalUnreadAllStudents;
 
   DashboardController(this._loginController) {
     // 1. Initialize counts immediately on creation
@@ -62,11 +73,16 @@ class DashboardController with ChangeNotifier {
           await repo.getUnreadDiaryCount(studentId: _selectedStudentId);
       final correspondencesCount = await repo.getUnreadCorrespondenceCount(
           studentId: _selectedStudentId);
+      // Not student-scoped, unlike the two above - the Report Cards list
+      // screen always shows every child at once (matches the approved
+      // mockup), so there's no "selected student" filter to apply here.
+      final reportCardsCount = await repo.getUnreadReportCardCount();
 
       if (_isDisposed) return;
 
       _unreadDiaries = diariesCount;
       _unreadCorrespondences = correspondencesCount;
+      _unreadReportCards = reportCardsCount;
       notifyListeners();
 
       // The OS icon badge always reflects the TOTAL across every student /
@@ -75,7 +91,22 @@ class DashboardController with ChangeNotifier {
       // everything, not just the open chat.
       final overallDiaries = await repo.getUnreadDiaryCount();
       final overallCorrespondences = await repo.getUnreadCorrespondenceCount();
-      await _syncAppIconBadge(overallDiaries + overallCorrespondences);
+      await _syncAppIconBadge(
+          overallDiaries + overallCorrespondences + reportCardsCount);
+
+      // Per-kid breakdown for the header's student-switcher badges.
+      final students = _loginController.getUser?.studentList ?? [];
+      final Map<String, int> byStudent = {};
+      for (var s in students) {
+        final d = await repo.getUnreadDiaryCount(studentId: s.id);
+        final c = await repo.getUnreadCorrespondenceCount(studentId: s.id);
+        final rc = await repo.getUnreadReportCardCount(studentId: s.id);
+        byStudent[s.id] = d + c + rc;
+      }
+      _unreadByStudent = byStudent;
+      _totalUnreadAllStudents =
+          overallDiaries + overallCorrespondences + reportCardsCount;
+      notifyListeners();
     } catch (e) {
       print("Error refreshing counts: $e");
     }

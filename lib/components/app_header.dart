@@ -127,11 +127,11 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
           // 2. DYNAMIC DROPDOWN
           if (showStudentSwitcher)
             _buildStudentDropdown(context, displayName,
-                user?.studentList ?? [], selectedStudentId),
+                user?.studentList ?? [], selectedStudentId, dashboardCtrl),
 
           Padding(
             padding: const EdgeInsets.only(right: 12),
-            child: Image.asset('assets/images/logo.png', width: 30),
+            child: Image.asset('assets/images/logo.png', width: 38),
           ),
         ],
       ),
@@ -181,9 +181,16 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
   }
 
   Widget _buildStudentDropdown(BuildContext context, String userName,
-      List<StudentModel> students, String? selectedId) {
+      List<StudentModel> students, String? selectedId,
+      DashboardController dashboardCtrl) {
+    final totalUnread = dashboardCtrl.totalUnreadAllStudents;
     return PopupMenuButton<String>(
-      icon: const Icon(Icons.person, color: Colors.white),
+      icon: Badge(
+        isLabelVisible: totalUnread > 0,
+        label: Text(totalUnread > 99 ? '99+' : totalUnread.toString()),
+        backgroundColor: Colors.red,
+        child: const Icon(Icons.person, color: Colors.white, size: 28),
+      ),
       offset: const Offset(0, 50),
       onSelected: (value) => _handleSelection(value, context),
       itemBuilder: (context) {
@@ -200,13 +207,16 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
             icon: Icons.all_inclusive,
             isSelected: selectedId == null));
 
-        // Dynamic Student List
+        // Dynamic Student List - each gets its own unread badge, so a
+        // parent can tell at a glance which kid has something new without
+        // switching to them first.
         for (var student in students) {
           items.add(_buildMenuItem(
               id: student.id,
               text: student.studentName,
               icon: Icons.school,
-              isSelected: selectedId == student.id));
+              isSelected: selectedId == student.id,
+              unreadCount: dashboardCtrl.unreadByStudent[student.id] ?? 0));
         }
 
         // Footer (Logout)
@@ -250,6 +260,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
     required IconData icon,
     bool isSelected = false,
     bool isDestructive = false,
+    int unreadCount = 0,
   }) {
     return PopupMenuItem<String>(
       value: id,
@@ -261,8 +272,36 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
         child: Row(
           children: [
-            Icon(icon,
-                size: 20, color: isDestructive ? Colors.red : Colors.grey[700]),
+            // Badge sits at the icon's top-left corner, like the dashboard
+            // cards' own unread badges, rather than trailing after the
+            // label where it read as misaligned.
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(icon,
+                    size: 20, color: isDestructive ? Colors.red : Colors.grey[700]),
+                if (unreadCount > 0)
+                  Positioned(
+                    top: -6,
+                    left: -6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                          color: Colors.red, borderRadius: BorderRadius.circular(8)),
+                      child: Text(
+                        unreadCount > 99 ? '99+' : unreadCount.toString(),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -274,7 +313,10 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
               ),
             ),
             if (isSelected)
-              const Icon(Icons.check_circle, size: 18, color: Colors.blue),
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Icon(Icons.check_circle, size: 18, color: Colors.blue),
+              ),
           ],
         ),
       ),

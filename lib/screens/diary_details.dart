@@ -4,6 +4,7 @@ import 'package:bla_flutter_app/controllers/login_controller.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/models/diary_comments_model.dart';
 import 'package:bla_flutter_app/themes/constants.dart';
+import 'package:bla_flutter_app/utils/helpers.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../constants/api_strings.dart';
@@ -375,7 +376,7 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
                       // ✅ WRAPPED IN SELECTION AREA FOR COPY/PASTE
                       SelectionArea(
                         child: HtmlWidget(
-                          widget.item.details ?? "",
+                          autoLinkifyHtml(widget.item.details ?? ""),
                           textStyle: const TextStyle(
                               fontSize: 16,
                               height: 1.5,

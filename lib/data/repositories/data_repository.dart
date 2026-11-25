@@ -12,6 +12,9 @@ import 'package:bla_flutter_app/data/sources/remote/correspondences_source.dart'
 import 'package:bla_flutter_app/data/sources/remote/correspondences_messages_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/contacts_source.dart';
 import 'package:bla_flutter_app/data/sources/remote/classes_source.dart';
+import 'package:bla_flutter_app/data/sources/remote/report_cards_list_source.dart';
+import 'package:bla_flutter_app/data/sources/remote/report_card_6plus_source.dart';
+import 'package:bla_flutter_app/data/sources/remote/report_card_nur5_source.dart';
 import 'package:bla_flutter_app/db/sqlite.dart';
 import 'package:bla_flutter_app/models/base_model.dart';
 import 'package:bla_flutter_app/models/user_model.dart';
@@ -19,6 +22,7 @@ import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/models/diary_comments_model.dart';
 import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/models/posi_api_queue_model.dart';
+import 'package:bla_flutter_app/models/report_card_list_model.dart';
 import 'package:bla_flutter_app/models/data_fetches_model.dart'; // ✅ Import
 
 import 'package:bla_flutter_app/services/auth_service.dart';
@@ -44,6 +48,12 @@ class DataRepository {
   final ApiContactsDataSource _contactsDataSource = ApiContactsDataSource();
   final ApiClassesDataSource _classesDataSource =
       ApiClassesDataSource(); // ✅ Add this
+  final ApiReportCardsListDataSource _reportCardsListDataSource =
+      ApiReportCardsListDataSource();
+  final ApiReportCard6PlusDataSource _reportCard6PlusDataSource =
+      ApiReportCard6PlusDataSource();
+  final ApiReportCardNur5DataSource _reportCardNur5DataSource =
+      ApiReportCardNur5DataSource();
 
   DataRepository(this._sqLiteDB);
 
@@ -57,6 +67,14 @@ class DataRepository {
     BuildContext? context,
     String? userId,
     String? accessToken,
+    // ✅ NEW (2026-11-22, design-flaws-and-changes doc): when provided, only
+    // these entities are synced - everything else is skipped entirely
+    // (not even attempted). Used by pull-to-refresh on a single screen
+    // (e.g. just FetchAction.diaries from the Diary list) so a quick
+    // per-screen refresh doesn't pay for a full 8-entity sync every time.
+    // `null` (the default) means "sync everything", matching every
+    // existing caller (login, Refresh button, resume/cold-start-sync).
+    Set<FetchAction>? only,
   }) async {
     try {
       //Initialize controller if it is null
@@ -64,100 +82,161 @@ class DataRepository {
 
       // print("dataRepository::downloadAllData() - isEmployee: $isEmployee");
 
-      var success = await syncEntity(
-        cookies,
-        0,
-        1000,
-        _diaryDataSource,
-        FetchAction.diaries,
-        TableNames.diaries,
-        shouldDownloadJson: false,
-        shouldFetchInBatches: true,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Diaries");
+      var success = true;
+
+      if (only == null || only.contains(FetchAction.diaries)) {
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _diaryDataSource,
+          FetchAction.diaries,
+          TableNames.diaries,
+          shouldDownloadJson: false,
+          shouldFetchInBatches: true,
+          userId: userId,
+          accessToken: accessToken,
+          preserveLocalUnread: true,
+        );
+        if (!success) {
+          throw Exception("Failure while syncing Diaries");
+        }
       }
 
-      success = await syncEntity(
-        cookies,
-        0,
-        1000,
-        _diaryCommentsDataSource,
-        FetchAction.diariesComments,
-        TableNames.diariesComments,
-        shouldDownloadJson: false,
-        shouldFetchInBatches: true,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Diaries Comments");
+      // ✅ REMOVED (2026-11-22, design-flaws-and-changes doc): diary
+      // comments are disabled by staff decision (see bug_diary_oom_crash
+      // memory) and have never been shown in the app - Samee's explicit
+      // call was to stop paying for this sync entirely (an extra full
+      // batched entity fetch on every sync) rather than keep fetching data
+      // nothing ever displays. This is independent of the `only` scoping
+      // above/below - diariesComments is dropped unconditionally, not just
+      // when a caller scopes a partial sync to exclude it. Re-add this
+      // syncEntity() call (FetchAction.diariesComments /
+      // TableNames.diariesComments) if comments are ever re-enabled.
+
+      if (only == null || only.contains(FetchAction.correspondences)) {
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _correspondenceDataSource,
+          FetchAction.correspondences,
+          TableNames.correspondences,
+          shouldDownloadJson: false,
+          shouldFetchInBatches: true,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          throw Exception("Failure while syncing Correspondences");
+        }
       }
 
-      success = await syncEntity(
-        cookies,
-        0,
-        1000,
-        _correspondenceDataSource,
-        FetchAction.correspondences,
-        TableNames.correspondences,
-        shouldDownloadJson: false,
-        shouldFetchInBatches: true,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Correspondences");
+      if (only == null || only.contains(FetchAction.correspondencesMessages)) {
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _correspondenceMessagesDataSource,
+          FetchAction.correspondencesMessages,
+          TableNames.correspondencesMessages,
+          shouldDownloadJson: false,
+          shouldFetchInBatches: true,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          throw Exception("Failure while syncing Correspondence Messages");
+        }
       }
 
-      success = await syncEntity(
-        cookies,
-        0,
-        1000,
-        _correspondenceMessagesDataSource,
-        FetchAction.correspondencesMessages,
-        TableNames.correspondencesMessages,
-        shouldDownloadJson: false,
-        shouldFetchInBatches: true,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Correspondence Messages");
+      if (only == null || only.contains(FetchAction.contacts)) {
+        // Sync Contacts
+        success = await syncEntity(
+          cookies,
+          0, // offset
+          1000, // limit (fetch all)
+          _contactsDataSource, // or generic fetcher
+          FetchAction.contacts,
+          TableNames.contacts,
+          shouldDownloadJson: false,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          throw Exception("Failure while syncing Contacts");
+        }
       }
 
-      // Sync Contacts
-      success = await syncEntity(
-        cookies,
-        0, // offset
-        1000, // limit (fetch all)
-        _contactsDataSource, // or generic fetcher
-        FetchAction.contacts,
-        TableNames.contacts,
-        shouldDownloadJson: false,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Contacts");
+      if (only == null || only.contains(FetchAction.classes)) {
+        // ✅ Sync Classes
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _classesDataSource,
+          FetchAction.classes,
+          TableNames.classes,
+          shouldDownloadJson: false,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          throw Exception("Failure while syncing Classes");
+        }
       }
 
-      // ✅ Sync Classes
-      success = await syncEntity(
-        cookies,
-        0,
-        1000,
-        _classesDataSource,
-        FetchAction.classes,
-        TableNames.classes,
-        shouldDownloadJson: false,
-        userId: userId,
-        accessToken: accessToken,
-      );
-      if (!success) {
-        throw Exception("Failure while syncing Classes");
+      // Report Cards (v9): list is cheap/always-full-refetch (no
+      // modifiedDate support server-side - see getAPIReportCardList()'s own
+      // comment on why), 6+ and NUR-5 detail are incremental via the normal
+      // modifiedDate cursor. None of these being missing should fail the
+      // whole login/sync cycle - Report Cards is a new, optional-for-now
+      // feature, not core data parents already depend on (unlike Diary/
+      // Correspondence above), so a failure here is logged and swallowed
+      // rather than thrown.
+      if (only == null || only.contains(FetchAction.reportCardsList)) {
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _reportCardsListDataSource,
+          FetchAction.reportCardsList,
+          TableNames.reportCardsList,
+          shouldFetchInBatches: true,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          print("Data Repository: Failure while syncing Report Cards list (non-fatal)");
+        }
+      }
+
+      if (only == null || only.contains(FetchAction.reportCard6Plus)) {
+        success = await syncReportCard6PlusDetails(
+          cookies,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          print("Data Repository: Failure while syncing Report Card 6+ details (non-fatal)");
+        }
+      }
+
+      if (only == null || only.contains(FetchAction.reportCardNur5)) {
+        success = await syncEntity(
+          cookies,
+          0,
+          1000,
+          _reportCardNur5DataSource,
+          FetchAction.reportCardNur5,
+          TableNames.reportCardNur5Data,
+          shouldFetchInBatches: true,
+          userId: userId,
+          accessToken: accessToken,
+        );
+        if (!success) {
+          print("Data Repository: Failure while syncing Report Card NUR-5 details (non-fatal)");
+        }
       }
 
       // Samee - We probably don't need this anymore.
@@ -175,6 +254,28 @@ class DataRepository {
     }
   }
 
+  // See the preserveLocalUnread doc comment on syncEntity() for why this
+  // exists. One query for the whole batch (not one per row) - bounded to
+  // however many ids are already locally unread, not a table scan.
+  Future<List<Map<String, dynamic>>> _mapsPreservingLocalUnread(
+      String tableName, List<BaseModel> batch) async {
+    final ids = batch.map((c) => c.modelId.toString()).toList();
+    if (ids.isEmpty) return [];
+
+    final idList = ids.map((id) => "'$id'").join(',');
+    final unreadRows = await _sqLiteDB.rawQuery(
+        "SELECT id FROM $tableName WHERE id IN ($idList) AND bRead = 0");
+    final locallyUnreadIds = unreadRows.map((r) => r['id'].toString()).toSet();
+
+    return batch.map((c) {
+      final map = c.toSQLLiteMap();
+      if (locallyUnreadIds.contains(map['id'].toString())) {
+        map['bRead'] = 0;
+      }
+      return map;
+    }).toList();
+  }
+
   Future<bool> syncEntity(
     String cookies,
     int startId,
@@ -186,6 +287,23 @@ class DataRepository {
     bool shouldDownloadJson = false,
     String? userId,
     String? accessToken,
+    // ✅ FIX (2026-11-25, staff diary badge): getAPIDiaryList()'s staff
+    // branch hardcodes `1 as bRead` for every row - there's no real
+    // per-staff read-tracking server-side at all. The "unread" a staff
+    // member actually sees is purely client-invented
+    // (push_notification_service.dart sets bRead=0 on arrival, flipped to
+    // 1 only once the user opens it). A bulk sync's upsert is a full row
+    // REPLACE, so re-fetching an already-arrived, still-unopened diary
+    // was silently overwriting that local bRead=0 with the server's
+    // always-1, wiping the badge on every sync regardless of whether the
+    // user had actually looked at it - confirmed live (Samee saw a
+    // real-time 18 -> 2 badge drop on toobaroghay's account purely from
+    // backgrounding/foregrounding the app). When true, preserves whatever
+    // the existing local row's bRead already is instead of accepting the
+    // incoming batch's value - only meaningful for entities where the
+    // server's own bRead isn't trustworthy (diaries' staff branch), so
+    // this is opt-in per entity rather than a blanket behavior change.
+    bool preserveLocalUnread = false,
   }) async {
     try {
       // Samee - temporarily not downloading json
@@ -272,7 +390,10 @@ class DataRepository {
 
           // ✅ FIX 2: Only insert the CURRENT batch into SQLite to prevent freezing!
           await _sqLiteDB.executeTransaction(
-              tableName, currentBatch.map((c) => c.toSQLLiteMap()).toList());
+              tableName,
+              preserveLocalUnread
+                  ? await _mapsPreservingLocalUnread(tableName, currentBatch)
+                  : currentBatch.map((c) => c.toSQLLiteMap()).toList());
 
           // ✅ FIX 3: Standard SQL offset increments exactly by batchSize (0 -> 1000 -> 2000)
           _startId += batchSize;
@@ -310,9 +431,11 @@ class DataRepository {
         }
         await _sqLiteDB.executeTransaction(
           tableName,
-          entityList.map((c) {
-            return c.toSQLLiteMap();
-          }).toList(),
+          preserveLocalUnread
+              ? await _mapsPreservingLocalUnread(tableName, entityList)
+              : entityList.map((c) {
+                  return c.toSQLLiteMap();
+                }).toList(),
         );
         if (tableName.toLowerCase() == 'users') {
           var numUsers = entityList.length;
@@ -377,6 +500,176 @@ class DataRepository {
             TableNames.userDataFetches, dataFetchModel.toMap());
       }
 
+      return true;
+    } catch (e, s) {
+      print("Data Repository: ${e.toString()} \n ${s.toString()}");
+      return false;
+    }
+  }
+
+  // Report Cards 6+ detail doesn't fit syncEntity()'s one-row-per-table
+  // model - getAPIReportCard6Plus() returns one composite object per report
+  // card (examTypes/subjects/marks/summary bundled together), flattened
+  // here into report_card_marks_6plus and report_card_summary_6plus.
+  // Reuses the same user_data_fetches cursor-tracking convention as
+  // syncEntity() so this participates in incremental sync the same way.
+  Future<bool> syncReportCard6PlusDetails(
+    String cookies, {
+    String? userId,
+    String? accessToken,
+    int? reportCardId,
+  }) async {
+    try {
+      String? modifiedDate;
+      if (reportCardId == null) {
+        var entityRow = await _sqLiteDB.query(
+          TableNames.userDataFetches,
+          "action=?",
+          [FetchAction.reportCard6Plus.name],
+        );
+        if (entityRow.isNotEmpty) {
+          modifiedDate = DataFetchesModel.fromMap(entityRow.first).serverTimestamp;
+        }
+      }
+
+      downloadingStatusStreamController?.add("Downloading report card details");
+      var reportCards = await _reportCard6PlusDataSource.fetchReportCards(
+        cookies: cookies,
+        modifiedDate: modifiedDate,
+        reportCardId: reportCardId,
+        userId: userId,
+        accessToken: accessToken,
+      );
+
+      if (reportCards.isEmpty) return true;
+
+      var headerRows = <Map<String, dynamic>>[];
+      var marksRows = <Map<String, dynamic>>[];
+      var summaryRows = <Map<String, dynamic>>[];
+      String latestDateStr = modifiedDate ?? '';
+
+      for (var rcDynamic in reportCards) {
+        var rc = rcDynamic as Map<String, dynamic>;
+        var reportCardId = rc['reportCardId'];
+
+        final header = rc['header'] as Map<String, dynamic>?;
+        if (header != null) {
+          headerRows.add({
+            'reportCardId': reportCardId,
+            'studentName': header['studentName'],
+            'fathersName': header['fathersName'],
+            'grNo': header['grNo'],
+            'rollNo': header['rollNo'],
+            'branch': header['branch'],
+            'classNumber': header['classNumber'],
+            'section': header['section'],
+            'classTeacher': header['classTeacher'],
+          });
+        }
+
+        var examTypeLabelsById = <String, String>{};
+        for (var et in (rc['examTypes'] as List<dynamic>)) {
+          examTypeLabelsById[et['id'].toString()] = et['name'];
+        }
+        var subjectNamesById = <String, String>{};
+        for (var s in (rc['subjects'] as List<dynamic>)) {
+          subjectNamesById[s['id'].toString()] = s['name'];
+        }
+
+        for (var m in (rc['marks'] as List<dynamic>)) {
+          marksRows.add({
+            'reportCardId': reportCardId,
+            'examTypeId': m['examTypeId'],
+            'examTypeLabel': examTypeLabelsById[m['examTypeId'].toString()],
+            'subjectId': m['subjectId'],
+            'subjectName': subjectNamesById[m['subjectId'].toString()],
+            'maxMarks': m['maxMarks'],
+            'obtainedMarks': m['marksObtained'],
+            'passingMarks': m['passingMarks'],
+            'highestMarks': m['highestMarks'],
+          });
+        }
+
+        for (var s in (rc['summary'] as List<dynamic>)) {
+          summaryRows.add({
+            'reportCardId': reportCardId,
+            'examTypeId': s['examTypeId'],
+            'isAnnual': s['isAnnual'] == true ? 1 : 0,
+            'attendanceVal': s['attendanceVal'],
+            'attendanceTotal': s['attendanceTotal'],
+            'highestInClass': s['highestInClass'],
+            'totalStudents': s['totalStudents'],
+            'behavior': s['gen_behavior'],
+            'punctuality': s['punctuality'],
+            'academicPotential': s['academic_potential'],
+            'participation': s['class_participation'],
+            'creativity': s['creativity'],
+            'examDate': s['date'],
+            'remarks': s['remarks'],
+          });
+        }
+
+        var rcModified = rc['modifiedDate']?.toString();
+        if (rcModified != null &&
+            rcModified.isNotEmpty &&
+            (latestDateStr.isEmpty ||
+                DateTime.parse(latestDateStr).isBefore(DateTime.parse(rcModified)))) {
+          latestDateStr = rcModified;
+        }
+      }
+
+      downloadingStatusStreamController?.add("Saving report card details to database");
+      await _sqLiteDB.executeTransaction(TableNames.reportCardHeader6Plus, headerRows);
+      await _sqLiteDB.executeTransaction(TableNames.reportCardMarks6Plus, marksRows);
+      await _sqLiteDB.executeTransaction(TableNames.reportCardSummary6Plus, summaryRows);
+
+      // A single-card on-demand fetch must NOT touch the incremental sync
+      // cursor - it's one card pulled out of order (possibly older than
+      // what's already been synced), not a step forward in the regular
+      // cursor-driven sync.
+      if (reportCardId == null) {
+        var dataFetchModel = DataFetchesModel(
+          username: _sqLiteDB.dbName,
+          action: FetchAction.reportCard6Plus,
+          serverTimestamp: latestDateStr,
+          numRowsFetched: reportCards.length,
+          lastID: "-1",
+        );
+        await _sqLiteDB.insertOrUpdate(
+            TableNames.userDataFetches, dataFetchModel.toMap());
+      }
+
+      return true;
+    } catch (e, s) {
+      print("Data Repository: ${e.toString()} \n ${s.toString()}");
+      return false;
+    }
+  }
+
+  // NUR-5's on-demand single-card counterpart to syncReportCard6PlusDetails()
+  // above. NUR-5's rows are already flat (no composite object to flatten, see
+  // ApiReportCardNur5DataSource), and like the 6+ version, this deliberately
+  // does NOT touch the reportCardNur5 incremental sync cursor.
+  Future<bool> fetchReportCardNur5Detail(
+    int reportCardId, {
+    required String cookies,
+    String? userId,
+    String? accessToken,
+  }) async {
+    try {
+      downloadingStatusStreamController?.add("Downloading report card details");
+      var result = await _reportCardNur5DataSource.fetchData(
+        cookies: cookies,
+        params: ['reportCardId=$reportCardId'],
+        userId: userId,
+        accessToken: accessToken,
+      );
+      var rows = (result["dataList"] as List<BaseModel>)
+          .map((c) => c.toSQLLiteMap())
+          .toList();
+
+      downloadingStatusStreamController?.add("Saving report card details to database");
+      await _sqLiteDB.executeTransaction(TableNames.reportCardNur5Data, rows);
       return true;
     } catch (e, s) {
       print("Data Repository: ${e.toString()} \n ${s.toString()}");
@@ -454,9 +747,19 @@ class DataRepository {
     }
 // If filtering for Notices tab, exclude them so they don't double up!
     // COALESCE guards against a NULL title - see getDiaries() for why.
+    //
+    // ✅ FIX (2026-11-24): was excluding on the title match alone, not
+    // mirroring the Timetable tab's actual inclusion condition above (title
+    // match AND an attachment present). A general notice whose title
+    // happens to mention "timetable" but has no attached file was excluded
+    // here (assumed to belong under Timetable instead) while also failing
+    // the Timetable tab's own attachment requirement - falling into a gap
+    // where it was invisible and unopenable in every tab, yet still counted
+    // in the overall unread badge with no way to ever clear it. Now only
+    // excluded here if it would actually appear in Timetable.
     else if (isTimetable == false) {
       filters.add(
-          " NOT (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%')");
+          " NOT ((COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL))");
     }
 
     return await getTotalRowCountForTable(TableNames.diaries, filters);
@@ -537,9 +840,16 @@ class DataRepository {
     // COALESCE guards against a NULL title - "title LIKE ..." on NULL
     // evaluates to SQL NULL (not FALSE), which SQLite's WHERE clause treats
     // as excluding the row entirely, silently dropping untitled notices.
+    //
+    // ✅ FIX (2026-11-24): see getUnreadDiaryCount()'s identical fix - was
+    // excluding on the title match alone instead of mirroring the Timetable
+    // tab's actual inclusion condition (title match AND an attachment
+    // present), leaving a "timetable"-titled notice with no attachment
+    // invisible in every tab. Now only excluded here if it would actually
+    // appear in Timetable.
     else if (isTimetable == false) {
       whereClause +=
-          " AND NOT (COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%')";
+          " AND NOT ((COALESCE(title,'') LIKE '%timetable%' OR COALESCE(title,'') LIKE '%time table%') AND (attachment IS NOT NULL OR attachment2 IS NOT NULL))";
     }
 
     // Search by subject, className, title, or details (full, untruncated
@@ -712,6 +1022,131 @@ class DataRepository {
     });
   }
 
+  // --- Report Cards (v9) ---
+
+  Future<List<ReportCardListModel>> getReportCardsList() async {
+    final db = await _sqLiteDB.database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      TableNames.reportCardsList,
+      where: "is_deleted = 0",
+      orderBy: "studentName ASC",
+    );
+    return List.generate(
+        maps.length, (i) => ReportCardListModel.fromSQLLiteMap(maps[i]));
+  }
+
+  Future<Map<String, dynamic>?> getReportCard6PlusHeader(int reportCardId) async {
+    final db = await _sqLiteDB.database;
+    final rows = await db.query(
+      TableNames.reportCardHeader6Plus,
+      where: "reportCardId = ?",
+      whereArgs: [reportCardId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<List<Map<String, dynamic>>> getReportCard6PlusMarks(
+      int reportCardId) async {
+    final db = await _sqLiteDB.database;
+    return db.query(
+      TableNames.reportCardMarks6Plus,
+      where: "reportCardId = ?",
+      whereArgs: [reportCardId],
+      orderBy: "examTypeId ASC, subjectId ASC",
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getReportCard6PlusSummary(
+      int reportCardId) async {
+    final db = await _sqLiteDB.database;
+    return db.query(
+      TableNames.reportCardSummary6Plus,
+      where: "reportCardId = ?",
+      whereArgs: [reportCardId],
+      orderBy: "isAnnual ASC, examTypeId ASC",
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getReportCardNur5Data(
+      int reportCardId) async {
+    final db = await _sqLiteDB.database;
+    return db.query(
+      TableNames.reportCardNur5Data,
+      where: "reportCardId = ?",
+      whereArgs: [reportCardId],
+      orderBy: "examTypeId ASC, sortIndex ASC",
+    );
+  }
+
+  // Only 'available' report cards count toward unread - the other states
+  // (not_created/class_hidden/student_hidden/fee_defaulter) have nothing to
+  // actually view, so badging them as "unread" would be misleading.
+  Future<int> getUnreadReportCardCount({String? studentId}) async {
+    final db = await _sqLiteDB.database;
+    var where = "is_deleted = 0 AND state = 'available' AND bRead = 0";
+    if (studentId != null) {
+      where += " AND studentId = '$studentId'";
+    }
+    final result = await db.rawQuery(
+      "SELECT COUNT(*) as c FROM ${TableNames.reportCardsList} WHERE $where",
+    );
+    return (result.first['c'] as int?) ?? 0;
+  }
+
+  // A report_card_available push can't carry the real row directly the way
+  // diary/correspondence pushes do: the class-wide "App" button broadcasts
+  // to a shared class topic, which can't embed a different correct
+  // reportCardId per recipient, and even the per-student Save-button push
+  // only nudges - so instead of a local insert from payload, every
+  // report_card_available push (see push_notification_service.dart)
+  // triggers this instead: a plain re-run of the same list-only sync
+  // downloadAllData() already does, scoped to just this one entity so it
+  // doesn't also hit Diary/Correspondence/etc. Cheap - getAPIReportCardList()
+  // always does a full re-fetch anyway (see its own comment on why), there's
+  // no incremental cursor to worry about missing here.
+  Future<bool> syncReportCardsListOnly({
+    required String cookies,
+    String? userId,
+    String? accessToken,
+  }) async {
+    return syncEntity(
+      cookies,
+      0,
+      1000,
+      _reportCardsListDataSource,
+      FetchAction.reportCardsList,
+      TableNames.reportCardsList,
+      shouldFetchInBatches: true,
+      userId: userId,
+      accessToken: accessToken,
+    );
+  }
+
+  // bRead lives directly on the backend's report_cards row (not an
+  // app_notifications-backed row like diary/correspondence) - same two-step
+  // pattern as markDiaryAsRead() either way: instant local update, then a
+  // real server round-trip so the read status survives a reinstall/re-
+  // sync/new device.
+  Future<void> markReportCardAsRead(String studentId, String reportCardId,
+      {AuthService? authService}) async {
+    await _sqLiteDB.update(
+      TableNames.reportCardsList,
+      {'bRead': 1},
+      'studentId = ?',
+      [studentId],
+    );
+
+    if (authService != null) {
+      await postDataToServer(
+        authService.cookieValue,
+        "markReportCardRead",
+        jsonEncode({"reportCardId": reportCardId}),
+        accessToken: authService.accessToken,
+      );
+    }
+  }
+
   // --- ADD THESE METHODS TO DataRepository ---
 
   // 2. Fetch comments for a SPECIFIC diary
@@ -744,17 +1179,6 @@ class DataRepository {
     ''';
     // print("getCorrespondenceMessages() - SQL: $sql");
     return await _sqLiteDB.rawQuery(sql);
-  }
-
-  // 3. Close Conversation
-  Future<void> closeCorrespondence(String correspondenceId) async {
-    // Update local status
-    await _sqLiteDB.update(
-        TableNames.correspondences,
-        {'status': 'Closed'}, // Or whatever your status flag is
-        'id = ?',
-        [correspondenceId]);
-    // TODO: Add to PostAPIQueue
   }
 
   Future<List<Map<String, dynamic>>> getAllDataFromTable(String tableName,
@@ -839,6 +1263,48 @@ class DataRepository {
   Future<int> saveDataToLocal(
       String tableName, Map<String, dynamic> row) async {
     return await _sqLiteDB.insertOrUpdate(tableName, row);
+  }
+
+  // One-time cleanup (2026-11-13) for duplicate diary rows that predate the
+  // id-alignment fix (push_notification_service.dart's _saveDiaryLocally()
+  // now uses the server's real appUsersNotificationId instead of inventing
+  // "{diaryId}-{studentId}"). A device that already received a diary via the
+  // old scheme, then later real-synced the same diary under its real id,
+  // ends up with two rows for the same (diaryId, studentId) - confirmed live
+  // (see bug_push_delivery_confirmation_gap_2026_11_05 memory). Only ever
+  // deletes a row when a real-id alternative for the same diaryId+studentId
+  // already exists in the local table - never guesses when every row still
+  // has the old invented id (i.e. no real sync has happened for that diary
+  // yet), since there's nothing to safely prefer in that case. Staff/class-
+  // scoped rows (studentId null/empty) are untouched - their id scheme was
+  // already aligned by the 2026-10-02 fix and was never exposed to this bug.
+  Future<int> dedupeDuplicateDiaries() async {
+    final groups = await _sqLiteDB.rawQuery(
+        "SELECT diaryId, studentId FROM ${TableNames.diaries} "
+        "WHERE studentId IS NOT NULL AND studentId != '' "
+        "GROUP BY diaryId, studentId HAVING COUNT(*) > 1");
+
+    int totalDeleted = 0;
+    for (final group in groups) {
+      final diaryId = group['diaryId'];
+      final studentId = group['studentId'];
+      final rows = await _sqLiteDB.rawQuery(
+          "SELECT id FROM ${TableNames.diaries} WHERE diaryId = '$diaryId' AND studentId = '$studentId'");
+      final ids = rows.map((r) => r['id'].toString()).toList();
+
+      // The real server id (app_users_notifications.id) is always a plain
+      // integer; only the old invented scheme ever contains a hyphen.
+      final hasRealId = ids.any((id) => !id.contains('-'));
+      if (!hasRealId) continue;
+
+      for (final id in ids) {
+        if (id.contains('-')) {
+          await _sqLiteDB.delete(TableNames.diaries, 'id = ?', [id]);
+          totalDeleted++;
+        }
+      }
+    }
+    return totalDeleted;
   }
 
   dynamic updateDataToLocal(String tableName, Map<String, dynamic> row,
@@ -1301,6 +1767,42 @@ class DataRepository {
       authService: authService,
     );
     */
+  }
+
+  // ---------------------------------
+  // --- 2b. CLOSE CORRESPONDENCE ---
+  // ---------------------------------
+  // Either party (teacher or parent) can close a conversation - matches the
+  // backend's existing endCorrespondence endpoint (classes/API.class.php),
+  // which was already built but never wired up to the Flutter "CLOSE
+  // CONVERSATION" button. Local-first like markCorrespondenceAsRead() above,
+  // so the list/detail screen reflects "closed" immediately rather than
+  // waiting on a round trip.
+  Future<void> closeCorrespondence(String id,
+      {required AuthService authService}) async {
+    final nowStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
+
+    await _sqLiteDB.update(
+      TableNames.correspondences,
+      {'dateEnded': nowStr},
+      'id = ?',
+      [id],
+    );
+
+    // ✅ FIX: endCorrespondence reads appCorrespondenceId from the query
+    // string (restapi.php's 'params' registration), not the JSON body -
+    // confirmed live via curl: posting it in the body (matching
+    // markCorrespondenceAsRead()'s readNotification convention) got back
+    // "Param 'appCorrespondenceId' cannot be empty!" every time. postDataToServer()
+    // just concatenates `endPoint` straight into the URL
+    // (api_client.dart's post(): '...?endpoint=$endPoint&accessToken=...'),
+    // so appending it there is the correct fix, not a workaround.
+    await postDataToServer(
+      authService.cookieValue,
+      "endCorrespondence&appCorrespondenceId=$id",
+      jsonEncode({}),
+      accessToken: authService.accessToken,
+    );
   }
 
   // ---------------------------------

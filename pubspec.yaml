@@ -61,6 +61,7 @@ dependencies:
   firebase_core: ^2.27.0
   firebase_messaging: ^14.7.19
   firebase_analytics: ^10.8.9
+  firebase_auth: ^4.17.0
   device_info_plus: ^9.1.2
   flutter_app_badger: ^1.5.0
   flutter_local_notifications: ^18.0.1
@@ -129,6 +130,17 @@ flutter:
 
 dependency_overrides:
   flutter_plugin_android_lifecycle: 2.0.22
+  # ✅ FIX (2026-11-19): 2.3.0+ rewrote this plugin's Android side to use
+  # package:jni for direct JNI bindings instead of the old, stable
+  # MethodChannel implementation - confirmed live via a real crash:
+  # SQLiteDB.databaseExists() -> path_provider's getApplicationCacheDirectory()
+  # -> PathProviderAndroid._applicationContext's JNI-based Context lookup threw
+  # "ClassNotFoundException: Didn't find class Landroid/content/Context" on
+  # every single login attempt, blocking login entirely. Pinned back to the
+  # last pre-jni (MethodChannel) release. This was sitting in pubspec.lock as
+  # an already-uncommitted transitive version bump before this was caught -
+  # would have shipped broken in the pending build otherwise.
+  path_provider_android: 2.2.22
 
 flutter_launcher_icons:
   #android: "launcher_icon"

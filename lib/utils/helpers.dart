@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 import 'dart:io';
+import 'package:flutter/gestures.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:bla_flutter_app/constants/storage_strings.dart';
 import 'package:bla_flutter_app/services/sercure_storage_service.dart';
@@ -17,6 +18,25 @@ Future<bool> checkInternetAvailability() async {
       listOfConnections.contains(ConnectivityResult.wifi) ||
       listOfConnections.contains(ConnectivityResult.mobile);
   return checkInternet;
+}
+
+// Arabic-script Unicode block (covers Urdu too, which is written in an
+// extended Arabic script) - used to detect RTL fields for Report Cards'
+// NUR-5 narrative text (e.g. Urdu reading/writing remarks), since the
+// backend doesn't return an explicit RTL flag - this is a presentation
+// concern, resolved client-side rather than adding a column server-side.
+bool containsRtlScript(String? text) {
+  if (text == null || text.isEmpty) return false;
+  return RegExp(r'[؀-ۿ]').hasMatch(text);
+}
+
+String toTitleCase(String input) {
+  return input
+      .split(' ')
+      .map((word) => word.isEmpty
+          ? word
+          : word[0].toUpperCase() + word.substring(1).toLowerCase())
+      .join(' ');
 }
 
 bool isJsonDecodable(String jsonString) {
@@ -418,6 +438,88 @@ String formatLocalDisplayDate(String? localIsoDateStr) {
   } catch (e) {
     return localIsoDateStr;
   }
+}
+
+final _bareUrlPattern = RegExp(r'https?://[^\s<>"]+', caseSensitive: false);
+final _existingAnchorPattern =
+    RegExp(r'<a\b[^>]*>.*?</a>', caseSensitive: false, dotAll: true);
+final _trailingPunctuationPattern = RegExp(r'[).,!?;:]+$');
+
+// ✅ Auto-links bare URLs typed as plain text (e.g. pasted straight into the
+// admin's rich-text editor instead of using its own "insert link" button) by
+// wrapping them in a real <a href="..."> before HtmlWidget renders the
+// content. HtmlWidget already makes a real <a> clickable via its onTapUrl
+// callback (see diary_details.dart) - it just never treats bare text that
+// merely looks like a URL as one. Skips any text already inside an existing
+// <a>...</a> so a real hyperlink's visible label never gets double-wrapped.
+String autoLinkifyHtml(String html) {
+  if (html.isEmpty) return html;
+  final buffer = StringBuffer();
+  int lastEnd = 0;
+  for (final match in _existingAnchorPattern.allMatches(html)) {
+    buffer.write(_linkifySegment(html.substring(lastEnd, match.start)));
+    buffer.write(match.group(0));
+    lastEnd = match.end;
+  }
+  buffer.write(_linkifySegment(html.substring(lastEnd)));
+  return buffer.toString();
+}
+
+String _linkifySegment(String segment) {
+  return segment.replaceAllMapped(_bareUrlPattern, (match) {
+    final url = match.group(0)!;
+    // Trim trailing sentence punctuation that isn't really part of the URL
+    // (e.g. "watch it here: https://example.com." shouldn't link the '.').
+    final trailingMatch = _trailingPunctuationPattern.firstMatch(url);
+    final trailing = trailingMatch?.group(0) ?? '';
+    final cleanUrl =
+        trailing.isEmpty ? url : url.substring(0, url.length - trailing.length);
+    if (cleanUrl.isEmpty) return url;
+    return '<a href="$cleanUrl">$cleanUrl</a>$trailing';
+  });
+}
+
+// ✅ Plain-text equivalent of autoLinkifyHtml(), for content with no HTML
+// renderer at all (e.g. correspondence messages, shown via a plain Text()
+// chat bubble rather than HtmlWidget). Reuses the same URL-detection regex,
+// but since there's no markup to inject a bare Text widget into, this
+// returns a TextSpan with tappable sub-spans instead.
+TextSpan linkifyPlainText(String text,
+    {required TextStyle style, Color linkColor = Colors.blue}) {
+  final spans = <InlineSpan>[];
+  int lastEnd = 0;
+  for (final match in _bareUrlPattern.allMatches(text)) {
+    final url = match.group(0)!;
+    final trailingMatch = _trailingPunctuationPattern.firstMatch(url);
+    final trailing = trailingMatch?.group(0) ?? '';
+    final cleanUrl = trailing.isEmpty
+        ? url
+        : url.substring(0, url.length - trailing.length);
+    if (cleanUrl.isEmpty) continue;
+
+    if (match.start > lastEnd) {
+      spans.add(TextSpan(text: text.substring(lastEnd, match.start)));
+    }
+    spans.add(TextSpan(
+      text: cleanUrl,
+      style: TextStyle(color: linkColor, decoration: TextDecoration.underline),
+      recognizer: TapGestureRecognizer()
+        ..onTap = () async {
+          final uri = Uri.tryParse(cleanUrl);
+          if (uri != null && await canLaunchUrl(uri)) {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          }
+        },
+    ));
+    if (trailing.isNotEmpty) {
+      spans.add(TextSpan(text: trailing));
+    }
+    lastEnd = match.end;
+  }
+  if (lastEnd < text.length) {
+    spans.add(TextSpan(text: text.substring(lastEnd)));
+  }
+  return TextSpan(children: spans, style: style);
 }
 /*
 // Samee - Custom Image Widget that checks if the image is present locally, otherwise fetches it from the server

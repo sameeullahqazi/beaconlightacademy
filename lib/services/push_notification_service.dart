@@ -5,6 +5,7 @@ import 'package:bla_flutter_app/models/correspondence_model.dart';
 import 'package:bla_flutter_app/models/diary_model.dart';
 import 'package:bla_flutter_app/screens/correspondence_details.dart';
 import 'package:bla_flutter_app/screens/diary_details.dart';
+import 'package:bla_flutter_app/screens/report_cards_list.dart';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_app_badger/flutter_app_badger.dart';
@@ -160,6 +161,8 @@ class PushNotificationService {
         await _saveCorrespondenceLocally(message.data); // uncomment when ready
       } else if (message.data['type'] == 'diary_comment_new') {
         await _saveDiaryCommentLocally(message.data); // ✅ Catch the comment!
+      } else if (message.data['type'] == 'report_card_available') {
+        await _syncReportCardListLocally(message.data);
       }
 
       // ✅ NEW (2026-10-10): show a real OS notification instead of the
@@ -315,47 +318,64 @@ class PushNotificationService {
     } else if (type == 'correspondence_new') {
       await _saveCorrespondenceLocally(data);
 
-      final loginCtrl =
-          Provider.of<LoginController>(Get.context!, listen: false);
-      final repo = loginCtrl.getDataRepository();
+      // ✅ FIX (2026-11-19): was unguarded Get.context! with no try/catch,
+      // unlike every sibling branch in this function (diary_new,
+      // diary_comment_new) - confirmed live crash: tapping a correspondence
+      // notification from a fully terminated app (cold start) can run this
+      // before GetX has attached its context yet, throwing "Null check
+      // operator used on a null value" uncaught. The message itself is
+      // already saved locally by _saveCorrespondenceLocally() above either
+      // way - this only affects whether the tap can deep-link straight to
+      // the thread, so falling back to the dashboard on failure (same
+      // fallback the diary_new branch uses) loses nothing real.
+      try {
+        final loginCtrl =
+            Provider.of<LoginController>(Get.context!, listen: false);
+        final repo = loginCtrl.getDataRepository();
 
-      if (repo != null) {
-        int corrId = int.tryParse(data['correspondenceId'].toString()) ?? 0;
+        if (repo != null) {
+          int corrId = int.tryParse(data['correspondenceId'].toString()) ?? 0;
 
-        // Fetch the Parent Thread to pass to the Chat Screen
-        final dbResult = await repo.rawQuery(
-            "SELECT * FROM ${TableNames.correspondences} WHERE id = $corrId LIMIT 1");
+          // Fetch the Parent Thread to pass to the Chat Screen
+          final dbResult = await repo.rawQuery(
+              "SELECT * FROM ${TableNames.correspondences} WHERE id = $corrId LIMIT 1");
 
-        if (dbResult.isNotEmpty) {
-          final thread = CorrespondenceModel.fromSQLLiteMap(
-              dbResult.first); // Ensure you have this factory or similar
+          if (dbResult.isNotEmpty) {
+            final thread = CorrespondenceModel.fromSQLLiteMap(
+                dbResult.first); // Ensure you have this factory or similar
 
-          // 3. Mark as read instantly (Safe Offline Mode)
-          try {
-            // If we have the server ID, tell the server!
-            await repo.markCorrespondenceAsRead(
-              thread.id,
-              authService: loginCtrl.authService,
-            );
-          } catch (e) {
-            print("Server read sync skipped: $e");
+            // 3. Mark as read instantly (Safe Offline Mode)
+            try {
+              // If we have the server ID, tell the server!
+              await repo.markCorrespondenceAsRead(
+                thread.id,
+                authService: loginCtrl.authService,
+              );
+            } catch (e) {
+              print("Server read sync skipped: $e");
+            }
+
+            try {
+              Provider.of<DashboardController>(Get.context!, listen: false)
+                  .refreshCounts();
+            } catch (_) {}
+
+            // ✅ NEW (2026-10-10): same reasoning as the diary_new branch
+            // above - Get.to() has no refresh-on-return of its own.
+            DataSyncService.instance.notifyExternalDataChange();
+
+            // ✅ NAVIGATE TO CONVERSATION
+            // Note: Check your ConversationView constructor. It usually takes a model.
+            Get.to(() => CorrespondenceDetailsScreen(item: thread));
+            return;
           }
-
-          try {
-            Provider.of<DashboardController>(Get.context!, listen: false)
-                .refreshCounts();
-          } catch (_) {}
-
-          // ✅ NEW (2026-10-10): same reasoning as the diary_new branch
-          // above - Get.to() has no refresh-on-return of its own.
-          DataSyncService.instance.notifyExternalDataChange();
-
-          // ✅ NAVIGATE TO CONVERSATION
-          // Note: Check your ConversationView constructor. It usually takes a model.
-          Get.to(() => CorrespondenceDetailsScreen(item: thread));
-          return;
         }
+      } catch (e) {
+        print("Error routing to Correspondence Details: $e");
       }
+
+      // Fallback: Go to dashboard if something failed
+      Get.offNamedUntil('/dashboard', (route) => route.isFirst);
     } else if (type == 'diary_comment_new') {
       // ✅ NEW: ROUTE TO DIARY DETAILS ON COMMENT TAP
 
@@ -409,6 +429,21 @@ class PushNotificationService {
 
       // Fallback: If anything fails, safely drop them at the dashboard
       Get.offNamedUntil('/dashboard', (route) => route.isFirst);
+    } else if (type == 'report_card_available') {
+      // Unlike diary/correspondence, this push can't name a specific
+      // report card to jump straight to - the class-wide "App" button
+      // broadcasts to a shared topic with no per-recipient reportCardId,
+      // and even the per-student Save-button push is just a nudge. So
+      // this always syncs the list (if it hasn't already run via the
+      // foreground/background handlers above) and opens the list screen,
+      // same place a parent would land on tapping the Report Cards
+      // dashboard card.
+      await _syncReportCardListLocally(data);
+      try {
+        Provider.of<DashboardController>(Get.context!, listen: false)
+            .refreshCounts();
+      } catch (_) {}
+      Get.to(() => const ReportCardsListScreen());
     }
   }
 
@@ -432,7 +467,19 @@ class PushNotificationService {
           'dateDue': data['dateDue'] == 'NULL' || data['dateDue'] == ''
               ? null
               : data['dateDue'],
-          'createdDate': DateTime.now().toString(),
+          // ✅ FIX (2026-11-19, staff report 2026-11-18 #4): was
+          // DateTime.now().toString() - the device's clock at the moment
+          // the push was PROCESSED, not the diary's real posting time. A
+          // delayed push (app backgrounded/killed, processed later -
+          // possibly the next day) showed the diary dated "today" instead
+          // of when it was actually posted, confirmed live: a diary posted
+          // 17 Nov showed as 18 Nov on the parent side only (staff/web read
+          // straight from the server and were unaffected). data['createdDate']
+          // is the real server timestamp (see saveDiary()'s $exactServerTime),
+          // sent raw in UTC - converted via utcToLocal() the same way
+          // _saveCorrespondenceLocally() already does for the identical
+          // UTC-payload-field pattern, below in this same file.
+          'createdDate': utcToLocal(data['createdDate']),
           'attachment':
               data['attachment'] == 'NULL' ? null : data['attachment'],
           'attachment2':
@@ -468,13 +515,23 @@ class PushNotificationService {
                 "SELECT diaryId FROM ${TableNames.diaries} WHERE diaryId = '${data['diaryId']}' AND studentId = '${student['id']}'");
             objDiary['studentId'] =
                 student['id']; // Set the studentId for this diary entry
-            // The bulk-sync path's `id` for a parent/student row is the
-            // server's app_users_notifications.id, which isn't present in
-            // the push payload. This client-only "{diaryId}-{studentId}"
-            // convention won't match that exactly on a later full sync, but
-            // it's stable and unique enough to let idx_diaries_unique_id
-            // dedupe repeat/retried pushes for the same student.
-            objDiary['id'] = '${data['diaryId']}-${student['id']}';
+            // ✅ FIX (2026-11-13): the bulk-sync path's `id` for a parent/
+            // student row is the server's app_users_notifications.id - the
+            // server now sends this per-recipient in the push payload too
+            // (see API.class.php's saveDiary()/sendNotificationChunk()/
+            // retryNotificationForRecipient()/retryFailedChunk(), all fixed
+            // same day). Using the REAL id here (not an invented one) means
+            // a later real sync's insertOrUpdate() updates this exact row in
+            // place instead of inserting a second one under a different id -
+            // this was the confirmed cause of live duplicate diary rows
+            // (see bug_push_delivery_confirmation_gap_2026_11_05 memory).
+            // Falls back to the old invented scheme only if an older server
+            // build somehow omits the field, so this never regresses to no
+            // id at all.
+            final realId = data['appUsersNotificationId'];
+            objDiary['id'] = (realId != null && realId.toString().isNotEmpty)
+                ? realId.toString()
+                : '${data['diaryId']}-${student['id']}';
 
             if (existing.isEmpty) {
               // 2. Insert the new diary for EACH matching student
@@ -501,14 +558,19 @@ class PushNotificationService {
           await repo.saveDataToLocal(TableNames.diaries, objDiary);
           // print("✅ Diary inserted for staff & UI refreshed!");
         }
-        // 3. Advance the serverTimestamp so we don't fetch it again!_saveDiaryLocally
-        await repo.rawUpdate(
-            "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
-            [
-              data['createdDate'].toString(),
-              data['diaryId'].toString(),
-              'diaries'
-            ]);
+        // ✅ FIX (2026-11-13): REMOVED the serverTimestamp advance that used
+        // to be here. Advancing the cursor from a single arriving push's own
+        // timestamp asserts "everything up to this point is synced", when it
+        // only proves "this one item arrived" - any earlier diary a push
+        // missed (silently dropped by FCM/the OS, app not running, etc.)
+        // would then be permanently stranded, since the real sync's
+        // `d.modified > cursor` can never look behind a cursor that's
+        // already past it. The cursor now only ever advances from a real
+        // bulk sync (login, the manual Refresh button, or the new real
+        // pull-to-refresh sync) - see
+        // bug_push_delivery_confirmation_gap_2026_11_05 memory for the full
+        // reasoning and the confirmed-live duplicate-row bug this (plus the
+        // id fix above) resolves.
 
         // ✅ 4. Force UI refresh WITH A DELAY so SQLite can finish writing!
         Future.delayed(const Duration(milliseconds: 500), () {
@@ -543,67 +605,90 @@ class PushNotificationService {
         int msgId = int.tryParse(data['id'].toString()) ?? 0;
         int sId = int.tryParse(data['senderId'].toString()) ?? 0;
 
+        // ✅ FIX (2026-11-19): compute these ONCE into local variables
+        // instead of mutating `data['createdDate']`/`data['date']` in
+        // place. The old in-place mutation was written so the message
+        // insert further below (shared by both branches) could reuse the
+        // converted value - but `data` is the actual Map this function
+        // received, and if this function somehow gets invoked twice for
+        // the same incoming message (confirmed live: a reply arrived
+        // "twice" per the logs, seconds apart), a second call sharing that
+        // same mutated Map would run utcToLocal() AGAIN on an
+        // already-converted value - confirmed live via a real test
+        // message that ended up stored 10 hours ahead of its real time
+        // (two 5-hour shifts stacked) instead of 5, sorting it above a
+        // genuinely more recent thread. Local variables can't leak between
+        // calls the way a shared mutable parameter can, regardless of why
+        // the double-invocation happens in the first place.
+        //
+        // `date` is derived from the converted `createdDate` rather than
+        // converting data['date'] directly: the payload's `date` field is
+        // already formatted ("Sat, 03/10/2026 05:33:16 AM"), which
+        // utcToLocal() can't parse (it needs an ISO-ish string) - it
+        // silently returned that string unconverted, leaving the displayed
+        // time ~5 hours behind the correctly-converted modifiedDate.
+        final String localCreatedDate = utcToLocal(data['createdDate']);
+        final String localDate = formatLocalDisplayDate(localCreatedDate);
+
         // 1. CREATE OR UPDATE THE PARENT THREAD
         final existingThread = await repo.rawQuery(
             "SELECT id FROM ${TableNames.correspondences} WHERE id = $corrId");
 
         // print("Existing thread check for correspondenceId $corrId: $existingThread");
-        String serverTimestamp = data['createdDate'].toString();
 
         if (existingThread.isEmpty) {
           // Brand new thread! Insert it so the UI can see it.
-          // Convert to local time before storing, same as the existing-thread
-          // branch below - otherwise a brand-new thread's modifiedDate stays
-          // in UTC (~5 hours behind Pakistan time), sorting it below older
-          // threads whose modifiedDate was already converted. Mutate `data`
-          // itself (not just inline) so the message insert further below,
-          // shared by both branches, also picks up the converted values.
-          //
-          // `date` is derived from the now-converted `createdDate` rather
-          // than converting data['date'] directly: the payload's `date`
-          // field is already formatted ("Sat, 03/10/2026 05:33:16 AM"),
-          // which utcToLocal() can't parse (it needs an ISO-ish string) -
-          // it silently returned that string unconverted, leaving the
-          // displayed time ~5 hours behind the correctly-converted
-          // modifiedDate.
-          data['createdDate'] = utcToLocal(data['createdDate']);
-          data['date'] = formatLocalDisplayDate(data['createdDate']);
           await repo.saveDataToLocal(TableNames.correspondences, {
             'id': corrId, // <-- Int
             'studentId': data['studentId'],
+            // ✅ FIX (2026-11-19, staff report 2026-11-18 #3): this never
+            // set studentName at all - the only place it's ever written -
+            // so a push-created thread permanently showed the sender's/
+            // contact's name instead (correspondence.dart's
+            // `studentName ?? senderName` fallback), confirmed NOT a Vue
+            // bug since Vue computes this server-side on each page load;
+            // this native-app-only gap only ever self-corrected if a real
+            // bulk sync happened to touch the row later, which per Finding
+            // B essentially never happens. Server now sends it in the
+            // payload (see API.class.php's saveCorrespondence() fix, same
+            // join getAPICorrespondenceList() already used).
+            'studentName': data['studentName'],
             'subject': data['correspondenceTitle'],
             'message': data['message'],
-            'date': data['date'],
+            'date': localDate,
             'dateEnded': data['dateEnded'] == '' ? null : data['dateEnded'],
             'senderName': data['senderName'],
             'contactName': data['senderName'],
             'bRead': 0,
+            // ✅ FIX (2026-11-22): was localCreatedDate (PKT-converted) -
+            // modifiedDate is the sync cursor field (see
+            // DataRepository.getLatestModifiedDateString()), never
+            // displayed directly (`date` right above is what the UI
+            // shows, and it's correctly local). Storing a converted value
+            // here doesn't just look inconsistent - it can leave a
+            // thread's sort order permanently wrong: the next incremental
+            // sync only re-fetches threads whose *real* server timestamp
+            // has moved past the cursor, so a thread that never receives
+            // another message after this one has nothing to trigger a
+            // re-fetch, and the wrong value sits there indefinitely
+            // instead of self-correcting. Use the raw payload value
+            // directly, matching correspondence_model.dart/diary_model.dart.
             'modifiedDate': data['createdDate'],
             'is_deleted': 0,
             'numUnreadMessages': 1,
           });
 
-          // 3. Advance Sync Timestamp
-          await repo.rawUpdate(
-            "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
-            [serverTimestamp, corrId.toString(), 'correspondences'],
-          );
+          // ✅ FIX (2026-11-13): REMOVED the serverTimestamp advance that
+          // used to be here - same reasoning as _saveDiaryLocally()'s
+          // identical fix above, applied to the 'correspondences' cursor.
         } else {
           // Thread exists! Just update the preview snippet and mark unread
-          // ✅ Convert dates to PST before saving!
-          // print("about to update existing thread with new message preview and unread status");
-          // See the new-thread branch above for why `date` is derived from
-          // `createdDate` rather than converted directly.
-          data['createdDate'] = utcToLocal(data['createdDate']);
-          data['date'] = formatLocalDisplayDate(data['createdDate']);
+          // ✅ FIX (2026-11-22): modifiedDate uses the raw payload value,
+          // not localCreatedDate - same reasoning as the new-thread branch
+          // above.
           await repo.rawUpdate(
               "UPDATE ${TableNames.correspondences} SET bRead = 0, message = ?, date = ?, modifiedDate = ?, numUnreadMessages = IFNULL(numUnreadMessages, 0) + 1 WHERE id = ?",
-              [
-                data['message'],
-                data['date'],
-                data['createdDate'].toString(),
-                corrId.toString()
-              ]);
+              [data['message'], localDate, data['createdDate'], corrId.toString()]);
         }
 
         // 2. INSERT THE MESSAGE
@@ -619,22 +704,24 @@ class PushNotificationService {
             'senderId': sId, // <-- Int
             'senderName': data['senderName'],
             'message': data['message'],
-            'date': data['date'],
+            'date': localDate,
             // 'correspondenceTitle': data['correspondenceTitle'],
             // 'correspondenceDate': data['correspondenceDate'],
             // 'dateEnded': data['dateEnded'] == '' ? null : data['dateEnded'],
-            'createdDate': data['createdDate'],
+            'createdDate': localCreatedDate,
+            // ✅ FIX (2026-11-22): same reasoning as the thread-level
+            // modifiedDate fix above - raw payload value, not
+            // localCreatedDate. createdDate (just above) stays local since
+            // that one's used for display.
             'modifiedDate': data['createdDate'],
             'is_deleted': 0,
             'bLocal': 0,
           });
         }
 
-        // 3. Advance Sync Timestamp
-        await repo.rawUpdate(
-          "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
-          [serverTimestamp, msgId.toString(), 'correspondencesMessages'],
-        );
+        // ✅ FIX (2026-11-13): REMOVED the serverTimestamp advance that used
+        // to be here - same reasoning as _saveDiaryLocally()'s identical fix
+        // above, applied to the 'correspondencesMessages' cursor.
 
         // ✅ 4. Force UI refresh WITH A DELAY so SQLite can finish writing!
         Future.delayed(const Duration(milliseconds: 500), () {
@@ -689,13 +776,9 @@ class PushNotificationService {
             'createdDate': data['createdDate'].toString(),
           });
 
-          await repo.rawUpdate(
-              "UPDATE ${TableNames.userDataFetches} SET serverTimestamp = ?, lastID = ? WHERE action = ?",
-              [
-                data['createdDate'].toString(),
-                msgId.toString(),
-                'diariesComments'
-              ]);
+          // ✅ FIX (2026-11-13): REMOVED the serverTimestamp advance that
+          // used to be here - same reasoning as _saveDiaryLocally()'s
+          // identical fix, applied to the 'diariesComments' cursor.
 
           // 3. Force UI refresh (If they are currently looking at the DiaryDetails screen, it will pop in!)
           Future.delayed(const Duration(milliseconds: 500), () {
@@ -710,6 +793,48 @@ class PushNotificationService {
       }
     } catch (e) {
       print("❌ Error saving diary comment locally: $e");
+    }
+  }
+
+  // --- REPORT CARDS: TARGETED LIST-ONLY RESYNC (see DataRepository.
+  // syncReportCardsListOnly() for why this hits the network instead of
+  // saving straight from the payload like the diary/correspondence
+  // handlers above) ---
+  Future<void> _syncReportCardListLocally(Map<String, dynamic> data) async {
+    try {
+      final loginCtrl =
+          Provider.of<LoginController>(Get.context!, listen: false);
+      final repo = loginCtrl.getDataRepository();
+
+      if (repo != null) {
+        await repo.syncReportCardsListOnly(
+          cookies: loginCtrl.authService.cookieValue,
+          userId: loginCtrl.authService.userId,
+          accessToken: loginCtrl.authService.accessToken,
+        );
+
+        // Without this, an already-open ReportCardsListScreen never finds
+        // out - this sync runs standalone via DataRepository directly, not
+        // through DataSyncService.syncData(), so stateStream (which the
+        // list screen listens on) never fires on its own. Confirmed live:
+        // the local DB updates correctly but the list stays stale until
+        // this is called. Same gap/fix as _handleNotificationTap()'s diary
+        // branch - see notifyExternalDataChange()'s own comment.
+        DataSyncService.instance.notifyExternalDataChange();
+
+        Future.delayed(const Duration(milliseconds: 500), () {
+          try {
+            if (Get.context != null) {
+              Provider.of<DashboardController>(Get.context!, listen: false)
+                  .refreshCounts();
+            }
+          } catch (e) {
+            print("Dashboard refresh failed: $e");
+          }
+        });
+      }
+    } catch (e) {
+      print("❌ Error syncing report card list: $e");
     }
   }
 
@@ -780,6 +905,8 @@ class PushNotificationService {
             await _saveCorrespondenceLocally(data);
           } else if (type == 'diary_comment_new') {
             await _saveDiaryCommentLocally(data);
+          } else if (type == 'report_card_available') {
+            await _syncReportCardListLocally(data);
           } else {
             print("Skipping pending payload with unrecognized type '$type': $payloadStr");
           }

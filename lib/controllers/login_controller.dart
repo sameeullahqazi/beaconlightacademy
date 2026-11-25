@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:bla_flutter_app/constants/storage_strings.dart';
 import 'package:bla_flutter_app/db/sqlite.dart';
+import 'package:bla_flutter_app/models/data_fetches_model.dart';
 import 'package:bla_flutter_app/models/user_model.dart';
 import 'package:bla_flutter_app/services/data_sync_service.dart';
 import 'package:bla_flutter_app/services/sercure_storage_service.dart';
@@ -20,6 +21,7 @@ import '../constants/table_names_strings.dart';
 import '../models/posi_api_queue_model.dart';
 import '../constants/api_strings.dart';
 import 'package:bla_flutter_app/services/push_notification_service.dart';
+import 'package:bla_flutter_app/screens/otp_verification_screen.dart';
 
 class LoginController with ChangeNotifier {
   String username = "";
@@ -254,6 +256,22 @@ class LoginController with ChangeNotifier {
             _showErrorDialog(
                 "Database Error", "Could not create local database.");
           }
+        } else if (_authService.lastLoginFailureReason ==
+            LoginFailureReason.verificationRequired) {
+          // OTP new-device gate: password was correct, this device just
+          // isn't trusted yet - send the user to verify via Firebase Phone
+          // Auth instead of showing a misleading "invalid credentials"
+          // error. Re-entering login() after verification succeeds takes
+          // this exact same first-login-flow branch again, now succeeding
+          // normally since the device will be trusted by then. GetX
+          // navigation (Get.to) doesn't need a BuildContext, same as the
+          // Get.dialog()/Get.offNamed() calls already used throughout this
+          // method.
+          await Get.to(() => OtpVerificationScreen(
+                username: username,
+                userId: _authService.pendingVerificationUserId!,
+                deviceId: _authService.pendingVerificationDeviceId!,
+              ));
         } else {
           SQLiteDB.deleteDatabase(username);
         }
@@ -284,6 +302,23 @@ class LoginController with ChangeNotifier {
         var dbSuccess = await _sqLiteDB!.open(shouldCreateSchema: false);
 
         if (dbSuccess) {
+          // ✅ One-time cleanup (2026-11-13): removes any duplicate diary
+          // rows left over from before the id-alignment fix (see
+          // DataRepository.dedupeDuplicateDiaries() for the full reasoning).
+          // Guarded per-username so it only ever runs once per device per
+          // account, not on every login. Fire-and-forget - it's a fast,
+          // local-only SQLite operation, no reason to block login on it.
+          () async {
+            final prefs = await SharedPreferences.getInstance();
+            final dedupeKey = 'dedupe_diaries_v1_$username';
+            if (prefs.getBool(dedupeKey) != true) {
+              final deleted = await _dataRepository!.dedupeDuplicateDiaries();
+              print(
+                  "dedupeDuplicateDiaries(): removed $deleted stale duplicate diary row(s) for $username");
+              await prefs.setBool(dedupeKey, true);
+            }
+          }();
+
           // Fix: Use bang operator (!)
           DataSyncService.instance.startSyncScheduler(
               _dataRepository!, _sqLiteDB!, _authService, username, password);
@@ -309,6 +344,18 @@ class LoginController with ChangeNotifier {
                 .processPendingBackgroundPayloads();
             // print("Returning Login Success (fresh): Navigating to Dashboard");
             Get.offNamed('/dashboard');
+          } else if (_authService.lastLoginFailureReason ==
+              LoginFailureReason.verificationRequired) {
+            // OTP new-device gate: this device's trust was revoked (e.g. by
+            // an admin) since the last successful login here - don't
+            // silently fall back to the stale local cache below as if this
+            // were just a network blip; the user genuinely needs to
+            // re-verify.
+            await Get.to(() => OtpVerificationScreen(
+                  username: username,
+                  userId: _authService.pendingVerificationUserId!,
+                  deviceId: _authService.pendingVerificationDeviceId!,
+                ));
           } else {
             // print("Server unreachable. Falling back to local cache...");
             var strUserData = await _dataRepository!.getUsers(userName: username);
@@ -358,8 +405,22 @@ class LoginController with ChangeNotifier {
 
   Future<bool> _serverLogin(String username, String password,
       {bool? bForceVIPLogin, BuildContext? context}) async {
-    _user = await _authService.login(username, password);
+    // OTP new-device gate: every real interactive login identifies itself
+    // as the mobile app so the backend can apply the device-trust check -
+    // see auth_service.dart's login() comment for why this is safe to send
+    // unconditionally (the Vue app/admin panel simply never call this).
+    final deviceId = await _getOrCreatePersistentDeviceId();
+    _user = await _authService.login(username, password, deviceId: deviceId);
     bool isLoggedIn = _user != null ? true : false;
+    // Phase 2 (v9 security): persisted per-username, same pattern as the
+    // cached password below it - every real login (first-time and
+    // returning-user) funnels through this one method.
+    if (isLoggedIn && _authService.refreshToken != null) {
+      await SecureStorageService.instance.write(
+        key: StorageStringsConstants.refreshTokenKey(username),
+        value: _authService.refreshToken!,
+      );
+    }
     return isLoggedIn;
   }
 
@@ -554,7 +615,8 @@ class LoginController with ChangeNotifier {
 
   // --- ADD THIS TO LoginController ---
 
-  Future<void> manualSync(BuildContext context) async {
+  Future<void> manualSync(BuildContext context,
+      {Set<FetchAction>? onlyEntities}) async {
     if (_isSyncCooldown) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -590,7 +652,8 @@ class LoginController with ChangeNotifier {
       // ==========================================
       // ✅ NEW: SILENTLY REFRESH THE USER PROFILE
       // ==========================================
-      UserModel? freshUser = await _authService.login(_user!.username!, pwd);
+      UserModel? freshUser = await _authService.login(_user!.username!, pwd,
+          deviceId: await _getOrCreatePersistentDeviceId());
       if (freshUser != null) {
         _user = freshUser; // Overwrite RAM
         // Overwrite Local DB
@@ -600,6 +663,16 @@ class LoginController with ChangeNotifier {
         await SecureStorageService.instance.write(
             key: StorageStringsConstants.userDataKey,
             value: jsonEncode(freshUser.toMap()));
+        // Phase 2 (v9 security): persist this login's refresh token too -
+        // otherwise syncData() (called a few lines below via
+        // startSyncScheduler) would read back the now-stale previously
+        // stored one instead of the one this very login just issued.
+        if (_authService.refreshToken != null) {
+          await SecureStorageService.instance.write(
+            key: StorageStringsConstants.refreshTokenKey(_user!.username!),
+            value: _authService.refreshToken!,
+          );
+        }
 
         // 🚀 Run the Smart Topic Healer with the new data!
         _syncFCMToken();
@@ -619,6 +692,7 @@ class LoginController with ChangeNotifier {
         _authService,
         _user!.username!,
         pwd,
+        onlyEntities: onlyEntities,
       );
 
       if (context.mounted) {
@@ -704,7 +778,8 @@ class LoginController with ChangeNotifier {
       // transfers, fee-defaulter status, etc. before the topic healer
       // runs); silently keep the cached copy already loaded above if
       // the device is offline or the server is unreachable.
-      UserModel? freshUser = await _authService.login(username, storedPwd);
+      UserModel? freshUser = await _authService.login(username, storedPwd,
+          deviceId: await _getOrCreatePersistentDeviceId());
       if (freshUser != null) {
         _user = freshUser;
         await _dataRepository!
@@ -712,7 +787,33 @@ class LoginController with ChangeNotifier {
         await SecureStorageService.instance.write(
             key: StorageStringsConstants.userDataKey,
             value: jsonEncode(freshUser.toMap()));
+        if (_authService.refreshToken != null) {
+          await SecureStorageService.instance.write(
+            key: StorageStringsConstants.refreshTokenKey(username),
+            value: _authService.refreshToken!,
+          );
+        }
+      } else if (_authService.lastLoginFailureReason ==
+          LoginFailureReason.invalidCredentials) {
+        // Phase 2 (v9 security, gap #9 fix): the server reached us and
+        // genuinely rejected this cached password (e.g. changed via the
+        // web admin panel or support) - unlike a network failure, running
+        // on indefinitely with the stale cached session is wrong here.
+        // Force the normal login screen instead of silently continuing.
+        print(
+            "Auto-Login: cached credentials were rejected by the server - logging out.");
+        removeLoggedInUser();
+        removeUserStorageData(username);
+        await SecureStorageService.instance
+            .delete(key: StorageStringsConstants.refreshTokenKey(username));
+        pendingAutoLoginFailureMessage =
+            "You were logged out because your password was changed. Please log in again.";
+        await _sqLiteDB?.close();
+        return false;
       }
+      // Any other failure reason (networkError, or none if login() threw
+      // before setting one) falls through exactly as before - keep running
+      // on the cached copy already loaded in step 2.
 
       // 8. Restore Authentication State
       // Important: Ensure AuthService has the token/cookie so API calls work

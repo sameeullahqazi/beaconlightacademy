@@ -1,5 +1,4 @@
 import 'package:bla_flutter_app/models/base_model.dart';
-import 'package:bla_flutter_app/utils/helpers.dart';
 
 class CorrespondenceMessageModel implements BaseModel {
   String id;
@@ -56,8 +55,17 @@ class CorrespondenceMessageModel implements BaseModel {
       message: map['message'] != null ? map['message'].toString() : '',
       date: map['date'] != null ? map['date'].toString() : '',
       createdDate: map['createdDate'] ?? '',
-      modifiedDate:
-          map['modifiedDate'] != null ? utcToLocal(map['modifiedDate']) : '',
+      // ✅ FIX (2026-11-22): modifiedDate is the sync cursor field (see
+      // DataRepository.getLatestModifiedDateString()), never displayed
+      // directly (the separate, already-server-formatted `date` field
+      // above is what the UI shows) - utcToLocal() here silently shifted
+      // every stored cursor ~5h ahead of the raw/UTC value
+      // getAPICorrespondenceMessages() compares against server-side
+      // (`m.created > '$modifiedDate'`, unconverted), permanently
+      // excluding any message created in that ~5h gap from every future
+      // incremental sync. Must stay raw, matching diary_model.dart's
+      // modifiedDate (which was never converted and never hit this bug).
+      modifiedDate: map['modifiedDate'] ?? '',
       isDeleted: map['is_deleted'] ?? 0,
       bLocal: map['bLocal'] ?? 0,
     );
@@ -73,8 +81,7 @@ class CorrespondenceMessageModel implements BaseModel {
       message: map['message'] != null ? map['message'].toString() : '',
       date: map['date'] != null ? map['date'].toString() : '',
       createdDate: map['createdDate'] ?? '',
-      modifiedDate:
-          map['modifiedDate'] != null ? utcToLocal(map['modifiedDate']) : '',
+      modifiedDate: map['modifiedDate'] ?? '',
       isDeleted: map['is_deleted'] != null
           ? int.parse(map['is_deleted'].toString())
           : 0,

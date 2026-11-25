@@ -137,7 +137,7 @@ class SQLiteDB extends BaseDB {
         },
         // Set the version. This executes the onCreate function and provides a
         // path to perform database upgrades and downgrades.
-        version: 3,
+        version: 4,
         onUpgrade: (db, oldVersion, newVersion) async {
           // idx_diaries_optimized (is_deleted, bRead, studentId, classId,
           // diaryType, diaryId DESC) doesn't cover createdDate, so
@@ -190,6 +190,109 @@ class SQLiteDB extends BaseDB {
             ''');
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_diaries_unique_id ON diaries(id);");
+          }
+
+          // Report Cards (v9) - new tables only, no existing data to migrate.
+          // Mirrors schema.sql exactly, except IF NOT EXISTS (this path hits
+          // every already-installed user's existing local DB, not a fresh
+          // one, so it must be safe to re-run and must never DROP).
+          if (oldVersion < 4) {
+            // user_data_fetches.action has a CHECK constraint listing valid
+            // action names - SQLite can't ALTER a CHECK constraint directly,
+            // so widening it for the 3 new Report Card sync actions means
+            // the standard recreate-copy-swap, preserving every existing
+            // row (diaries/correspondences/etc.'s sync cursors) exactly.
+            await db.execute('''
+              CREATE TABLE user_data_fetches_v4 (
+                username        TEXT,
+                action          TEXT PRIMARY KEY CHECK (action IN ('login', 'diaries', 'diariesComments', 'correspondences', 'correspondencesMessages', 'users', 'contacts', 'classes', 'reportCardsList', 'reportCard6Plus', 'reportCardNur5')),
+                serverTimestamp TEXT,
+                numRowsFetched  INT ,
+                lastID          TEXT
+              );
+            ''');
+            await db.execute(
+                'INSERT INTO user_data_fetches_v4 SELECT * FROM user_data_fetches;');
+            await db.execute('DROP TABLE user_data_fetches;');
+            await db.execute(
+                'ALTER TABLE user_data_fetches_v4 RENAME TO user_data_fetches;');
+
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS report_cards_list (
+                studentId     INT  PRIMARY KEY,
+                studentName   TEXT,
+                classId       INT ,
+                classNumber   INT ,
+                classBand     TEXT,
+                reportCardId  INT ,
+                modifiedDate  TEXT,
+                state         TEXT,
+                stateMessage  TEXT,
+                bRead         INT  DEFAULT 0,
+                is_deleted    INT  DEFAULT 0
+              );
+            ''');
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS report_card_header_6plus (
+                reportCardId  INT  PRIMARY KEY,
+                studentName   TEXT,
+                fathersName   TEXT,
+                grNo          TEXT,
+                rollNo        TEXT,
+                branch        TEXT,
+                classNumber   INT ,
+                section       TEXT,
+                classTeacher  TEXT
+              );
+            ''');
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS report_card_marks_6plus (
+                reportCardId    INT ,
+                examTypeId      INT ,
+                examTypeLabel   TEXT,
+                subjectId       INT ,
+                subjectName     TEXT,
+                maxMarks        INT ,
+                obtainedMarks   INT ,
+                passingMarks    INT ,
+                highestMarks    INT ,
+                PRIMARY KEY (reportCardId, examTypeId, subjectId)
+              );
+            ''');
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS report_card_summary_6plus (
+                reportCardId      INT ,
+                examTypeId        INT ,
+                isAnnual          INT  DEFAULT 0,
+                attendanceVal     INT ,
+                attendanceTotal   INT ,
+                highestInClass    INT ,
+                totalStudents     INT ,
+                behavior          TEXT,
+                punctuality       TEXT,
+                academicPotential TEXT,
+                participation     TEXT,
+                creativity        TEXT,
+                examDate          TEXT,
+                remarks           TEXT,
+                PRIMARY KEY (reportCardId, isAnnual, examTypeId)
+              );
+            ''');
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS report_card_nur5_data (
+                reportCardId   INT ,
+                examTypeId     INT ,
+                examTypeLabel  TEXT,
+                fieldId        INT ,
+                fieldLabel     TEXT,
+                fieldType      TEXT,
+                fieldIndex     TEXT,
+                value          TEXT,
+                isRtl          INT  DEFAULT 0,
+                sortIndex      INT ,
+                PRIMARY KEY (reportCardId, examTypeId, fieldId)
+              );
+            ''');
           }
         },
         onConfigure: (Database db) async {

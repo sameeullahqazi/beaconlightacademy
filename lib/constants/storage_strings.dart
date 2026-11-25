@@ -6,6 +6,12 @@ class StorageStringsConstants {
   static var accessStagingFlag = "${APIStrings.env}_access_staging_flag";
   static var bUserCustomerIDsModified =
       "${APIStrings.env}_user_customer_ids_modified";
+
+  // Phase 2 (v9 security) - the long-lived refresh token paired with the
+  // now-24h-expiring accessToken, stored per-username alongside the
+  // cached password (SecureStorageService.read(key: username)).
+  static String refreshTokenKey(String username) =>
+      "${APIStrings.env}_refresh_token_$username";
 }
 
 class Spectro1Constants {

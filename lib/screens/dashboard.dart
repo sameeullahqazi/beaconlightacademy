@@ -47,7 +47,12 @@ class _DashboardState extends State<DashboardScreen> {
   }
 
   Widget _buildBody(DashboardController ctrl) {
-    return Padding(
+    // Scrollable: the un-scrolled Column here previously assumed its content
+    // always fit the available body height, which held while there were
+    // only 2 cards (1 row) - adding the Report Cards row pushed total
+    // content height past what fits on some screen sizes/densities,
+    // overflowing at the bottom ("Bottom overflowed by 55 pixels").
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
@@ -70,6 +75,29 @@ class _DashboardState extends State<DashboardScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              // Own row below Diary, half-width, empty space on the right
+              // under Correspondence - matches the approved mockup layout.
+              _buildMenuCard(
+                title: "Report Cards",
+                subtitle: "View grades",
+                // TODO: placeholder - Diary/Correspondence use detailed
+                // hand-illustrated artwork (gradients, shading, a 3D pen),
+                // not something reproducible by hand-writing SVG at a
+                // matching fidelity. Using a plain Material icon instead of
+                // either duplicating Diary's icon or shipping a visibly
+                // cruder attempt - swap for a real illustrated asset
+                // matching the other two before this ships.
+                icon: Icons.grading_rounded,
+                routeName: '/report-cards',
+                badgeCount: ctrl.unreadReportCards,
+              ),
+              const SizedBox(width: 16),
+              const Expanded(child: SizedBox.shrink()),
+            ],
+          ),
           const SizedBox(height: 20),
         ],
       ),
@@ -79,10 +107,13 @@ class _DashboardState extends State<DashboardScreen> {
   Widget _buildMenuCard({
     required String title,
     required String subtitle,
-    required String imgPath,
+    String? imgPath,
+    IconData? icon,
     required String routeName,
     int badgeCount = 0,
   }) {
+    assert(imgPath != null || icon != null,
+        '_buildMenuCard needs either imgPath or icon');
     return Expanded(
       child: InkWell(
         onTap: () => Navigator.pushNamed(context, routeName),
@@ -108,10 +139,9 @@ class _DashboardState extends State<DashboardScreen> {
                       ),
                     ),
                     padding: const EdgeInsets.all(20.0),
-                    child: Image.asset(
-                      imgPath,
-                      fit: BoxFit.contain,
-                    ),
+                    child: icon != null
+                        ? Icon(icon, color: goldAccent, size: 56)
+                        : Image.asset(imgPath!, fit: BoxFit.contain),
                   ),
                   Container(
                     color: Colors.white,
