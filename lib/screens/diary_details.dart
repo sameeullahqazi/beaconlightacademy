@@ -283,31 +283,81 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
   bool _isSending = false;
 
   List<DiaryCommentModel> _comments = [];
-  bool _isLoadingComments = true;
+  // ✅ FIX (2026-11-26, Samee's call): diary comments are fully disabled
+  // (see the "temporarily disabled 2026-10-03" note at this screen's
+  // commented-out comments UI below) - the display was turned off back
+  // then but the fetch/reload machinery was deliberately left running "in
+  // case the decision is revisited". That live machinery turned out to be
+  // a real, separate, confirmed bug on its own: _loadComments()'s own
+  // setState() rebuilt this widget, which (via build()'s old unconditional
+  // Future.microtask(_loadComments) call) re-triggered the same reload -
+  // ~42 rebuilds/sec, continuous, for as long as this page stayed open,
+  // confirmed live via a temporary debug print. (This was initially
+  // suspected as the cause of the resume-triggered link-rendering glitch
+  // too, but that was later disproved - the glitch still reproduced live
+  // after this fix alone; see _loadFullDetails()'s fix note below for the
+  // actual cause.) Since the comments feature isn't shown to users at all,
+  // there's nothing worth the CPU/battery cost of that loop - disabling
+  // the fetch itself (not just re-gating it) rather than re-wiring it.
+  bool _isLoadingComments = false;
   bool _isLoadingDetails = true;
-  int _lastTotalUnread = -1;
+  // ✅ FIX (2026-11-26): see the full writeup on _loadFullDetails() below -
+  // this is the actual root cause of the resume-triggered link-rendering
+  // glitch (the earlier infinite-rebuild-loop fix above was a real bug
+  // worth fixing, but confirmed NOT the cause of this one - the glitch
+  // still reproduced live after that fix, which is what led to this
+  // correct diagnosis).
+  String? _fullDetails;
 
   @override
   void initState() {
     super.initState();
     // ✅ Wait for screen transition to finish before hitting the database
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadComments();
+      // _loadComments(); // disabled alongside the comments UI - see above
       _loadFullDetails();
     });
   }
 
-  // The list screen only passes a 300-char preview of `details` (see
-  // getDiaries()), so fetch the full content once this diary is actually
-  // opened.
+  // The list screen only passes a short preview of `details` (see
+  // getDiaries()'s substr(details, 1, 100)), so fetch the full content once
+  // this diary is actually opened.
   Future<void> _loadFullDetails() async {
+    // ✅ FIX (2026-11-26): same unmounted-context crash as _loadComments()
+    // below - this is scheduled via addPostFrameCallback() in initState(),
+    // so a page swiped away in the diary PageView before the callback
+    // fires would throw accessing `context` on an unmounted State.
+    if (!mounted) return;
     final repo = Provider.of<LoginController>(context, listen: false)
         .getDataRepository();
     if (repo != null) {
       final fullDetails = await repo.getDiaryDetailsById(widget.item.id);
       if (mounted) {
         setState(() {
-          widget.item.details = fullDetails;
+          // ✅ FIX (2026-11-26): this used to write straight back into
+          // widget.item.details - but widget.item is the SAME DiaryModel
+          // instance DiaryScreen's own _items list holds (passed by
+          // reference via `items: _items` in diary.dart, never copied).
+          // Confirmed live via a temporary debug print and a full
+          // call-site trace: opening a diary, then backgrounding the app
+          // (tapping its link opens a browser) and returning, intermittently
+          // replaced this screen's rendered content with the raw, truncated
+          // HTML the list's own preview query produces - substr(details, 1,
+          // 100) is a literal 100-char cut (confirmed exact: 100 vs 123
+          // chars for this diary), landing mid-tag inside the <a> and
+          // producing exactly the '...">https://' leak Samee reported.
+          // _loadFullDetails() itself was confirmed NOT to re-run when this
+          // happened (traced via a print at its own top) - app resume can
+          // trigger MaterialPageRoute to re-invoke its builder (window
+          // metrics/MediaQuery change), re-reading diary.dart's `_items`
+          // AFTER it's been reloaded by a resume-triggered sync, handing
+          // this screen a fresh, preview-truncated DiaryModel for the same
+          // diary via Flutter's normal didUpdateWidget path - no crash, no
+          // new initState(), just a quietly swapped prop. Caching the
+          // loaded full details in this State's own field instead (read in
+          // build() below, not widget.item.details) makes this screen's
+          // render immune to that swap, whatever upstream list state does.
+          _fullDetails = fullDetails;
           _isLoadingDetails = false;
         });
       }
@@ -322,7 +372,12 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
     super.dispose();
   }
 
+  // ✅ Disabled alongside the comments UI/fetch (see the field comment on
+  // _isLoadingComments above) - left in place, unreferenced, rather than
+  // deleted, matching this screen's existing re-enable-friendly pattern.
+  // ignore: unused_element
   Future<void> _loadComments() async {
+    if (!mounted) return;
     final repo = Provider.of<LoginController>(context, listen: false)
         .getDataRepository();
     if (repo != null) {
@@ -338,30 +393,15 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<DashboardController>(
-      builder: (context, dashboardCtrl, child) {
-        // _saveDiaryCommentLocally() (push_notification_service.dart) calls
-        // DashboardController.refreshCounts() after saving a new comment,
-        // which calls notifyListeners() unconditionally - but totalUnread
-        // itself (diary + correspondence unread counts) never includes
-        // comments, so gating the reload on totalUnread actually changing
-        // (as DiaryScreen does for its list, where every relevant event
-        // does move that number) never fires for a comment-only event.
-        // Reload on every rebuild after the first instead - this screen's
-        // single-diary comment query is cheap enough that reloading on an
-        // unrelated DashboardController update too is an acceptable cost
-        // for actually catching comment arrivals reliably.
-        if (_lastTotalUnread != -1) {
-          Future.microtask(_loadComments);
-        }
-        _lastTotalUnread = dashboardCtrl.totalUnread;
-
-        // ✅ WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
-        return (_isLoadingComments || _isLoadingDetails)
-            ? const Center(
-                child:
-                    CircularProgressIndicator(color: AppColors.purplePrimary))
-            : InteractiveViewer(
+    // ✅ Comment reloads on DashboardController updates are now driven by
+    // the addListener() call in initState() (see the fix note there), not
+    // by this build method - reloading here unconditionally on every
+    // rebuild was what caused the infinite loop.
+    // ✅ WRAPPED IN INTERACTIVE VIEWER FOR ZOOM
+    return (_isLoadingComments || _isLoadingDetails)
+        ? const Center(
+            child: CircularProgressIndicator(color: AppColors.purplePrimary))
+        : InteractiveViewer(
                 minScale: 1.0,
                 maxScale: 4.0, // Allow users to zoom in up to 4x
                 child: SingleChildScrollView(
@@ -376,7 +416,10 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
                       // ✅ WRAPPED IN SELECTION AREA FOR COPY/PASTE
                       SelectionArea(
                         child: HtmlWidget(
-                          autoLinkifyHtml(widget.item.details ?? ""),
+                          // ✅ FIX (2026-11-26): reads this State's own
+                          // _fullDetails, not widget.item.details - see the
+                          // fix note on _loadFullDetails() above.
+                          autoLinkifyHtml(_fullDetails ?? ""),
                           textStyle: const TextStyle(
                               fontSize: 16,
                               height: 1.5,
@@ -424,8 +467,6 @@ class _DiaryDetailBodyState extends State<_DiaryDetailBody> {
                   ),
                 ),
               );
-      },
-    );
   }
 
   Future<void> _postComment() async {
